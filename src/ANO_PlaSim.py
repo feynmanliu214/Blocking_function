@@ -79,11 +79,12 @@ def compute_anomalies(z500: xr.DataArray) -> xr.DataArray:
     return z500_anom
 
 
-def compute_threshold_90(z500_anom: xr.DataArray, 
-                         lat_min: float = 50.0, 
-                         lat_max: float = 80.0) -> float:
+def compute_threshold_percentile(z500_anom: xr.DataArray, 
+                                  lat_min: float = 50.0, 
+                                  lat_max: float = 80.0,
+                                  percentile: float = 90.0) -> float:
     """
-    Compute the 90th percentile threshold of anomalies over a latitude band.
+    Compute the Nth percentile threshold of anomalies over a latitude band.
     
     Uses AREA-WEIGHTED percentile to avoid over-representing polar grid cells
     on regular lat-lon grids (weights proportional to cos(latitude)).
@@ -97,18 +98,21 @@ def compute_threshold_90(z500_anom: xr.DataArray,
         Minimum latitude for threshold computation (default: 50.0°N)
     lat_max : float, optional
         Maximum latitude for threshold computation (default: 80.0°N)
+    percentile : float, optional
+        Percentile threshold to compute (default: 90.0)
+        Must be between 0 and 100.
     
     Returns
     -------
-    threshold_90 : float
-        The area-weighted 90th percentile value (scalar) in meters.
+    threshold : float
+        The area-weighted Nth percentile value (scalar) in meters.
     
     Notes
     -----
     The function:
     1. Selects all grid points within [lat_min, lat_max]
     2. Computes area weights proportional to cos(latitude)
-    3. Computes the area-weighted 90th percentile
+    3. Computes the area-weighted Nth percentile
     
     Area-weighting prevents polar grid cells from being over-represented
     in the percentile calculation, which would lead to thresholds that are
@@ -116,8 +120,8 @@ def compute_threshold_90(z500_anom: xr.DataArray,
     
     Examples
     --------
-    >>> threshold_90 = compute_threshold_90(z500_anom, lat_min=50, lat_max=80)
-    >>> print(f"90th percentile threshold: {threshold_90:.2f} m")
+    >>> threshold = compute_threshold_percentile(z500_anom, lat_min=50, lat_max=80, percentile=90)
+    >>> print(f"90th percentile threshold: {threshold:.2f} m")
     """
     # Select the latitude band using boolean indexing (robust to lat ordering)
     lat_mask = (z500_anom.lat >= lat_min) & (z500_anom.lat <= lat_max)
@@ -158,15 +162,23 @@ def compute_threshold_90(z500_anom: xr.DataArray,
     cumsum = np.cumsum(sorted_weights)
     cumsum = cumsum / cumsum[-1]  # Normalize to [0, 1]
     
-    # Find the 90th percentile by interpolation
-    threshold_90 = float(np.interp(0.90, cumsum, sorted_data))
+    # Find the Nth percentile by interpolation
+    threshold = float(np.interp(percentile / 100.0, cumsum, sorted_data))
     
-    return threshold_90
+    return threshold
 
 
-def _weighted_q90(z_window: np.ndarray, weights_1d: np.ndarray) -> float:
+# Backward compatibility alias
+def compute_threshold_90(z500_anom: xr.DataArray, 
+                         lat_min: float = 50.0, 
+                         lat_max: float = 80.0) -> float:
+    """Backward compatibility alias for compute_threshold_percentile with percentile=90."""
+    return compute_threshold_percentile(z500_anom, lat_min, lat_max, percentile=90.0)
+
+
+def _weighted_quantile(z_window: np.ndarray, weights_1d: np.ndarray, percentile: float = 90.0) -> float:
     """
-    Compute area-weighted 90th percentile with guaranteed weight-data alignment.
+    Compute area-weighted Nth percentile with guaranteed weight-data alignment.
     
     Transposes data to (lat, time, lon) layout, then broadcasts weights to match
     that exact layout before raveling. This guarantees one-to-one alignment
@@ -179,11 +191,14 @@ def _weighted_q90(z_window: np.ndarray, weights_1d: np.ndarray) -> float:
     weights_1d : np.ndarray
         Area weights for each latitude, shape (nlat,)
         Typically cos(latitude) values
+    percentile : float, optional
+        Percentile threshold to compute (default: 90.0)
+        Must be between 0 and 100.
     
     Returns
     -------
     threshold : float
-        Area-weighted 90th percentile value
+        Area-weighted Nth percentile value
     """
     # Arrange as (lat, time, lon) to make weights broadcasting trivial
     # Transpose from (n_times, nlat, nlon) to (nlat, n_times, nlon)
@@ -216,18 +231,25 @@ def _weighted_q90(z_window: np.ndarray, weights_1d: np.ndarray) -> float:
     cw = np.cumsum(sw, dtype=np.float64)
     cw /= cw[-1]
     
-    # Find 90th percentile using linear interpolation
+    # Find Nth percentile using linear interpolation
     # This matches the original implementation and is more robust
-    threshold = float(np.interp(0.90, cw, sd))
+    threshold = float(np.interp(percentile / 100.0, cw, sd))
     
     return threshold
 
 
+# Backward compatibility alias
+def _weighted_q90(z_window: np.ndarray, weights_1d: np.ndarray) -> float:
+    """Backward compatibility alias for _weighted_quantile with percentile=90."""
+    return _weighted_quantile(z_window, weights_1d, percentile=90.0)
+
+
 def _compute_threshold_for_month(z500_region: xr.DataArray,
                                   months: np.ndarray,
-                                  month: int) -> Tuple[int, float]:
+                                  month: int,
+                                  percentile: float = 90.0) -> Tuple[int, float]:
     """
-    Helper function to compute AREA-WEIGHTED 90th percentile threshold for a single month.
+    Helper function to compute AREA-WEIGHTED Nth percentile threshold for a single month.
     Used for parallel processing.
     
     Parameters
@@ -238,6 +260,8 @@ def _compute_threshold_for_month(z500_region: xr.DataArray,
         Array of month numbers for each time step
     month : int
         Month number (1-12) to compute threshold for
+    percentile : float, optional
+        Percentile threshold to compute (default: 90.0)
     
     Returns
     -------
@@ -254,7 +278,7 @@ def _compute_threshold_for_month(z500_region: xr.DataArray,
     month_mask = np.isin(months, window_months)
     z500_window = z500_region.isel(time=month_mask)
     
-    # Compute AREA-WEIGHTED 90th percentile
+    # Compute AREA-WEIGHTED Nth percentile
     if len(z500_window.time) > 0:
         data = z500_window.values  # (time, lat, lon)
         
@@ -263,15 +287,15 @@ def _compute_threshold_for_month(z500_region: xr.DataArray,
         weights = np.cos(np.deg2rad(lats))
         
         # Use the same helper function that guarantees alignment
-        threshold = _weighted_q90(data, weights)
+        threshold = _weighted_quantile(data, weights, percentile)
         
         # Sanity check: compare weighted vs unweighted quantile
         # They should have the same sign and similar magnitude
-        q90_unw = float(np.nanpercentile(data, 90))
-        if np.sign(threshold) != np.sign(q90_unw):
+        q_unw = float(np.nanpercentile(data, percentile))
+        if np.sign(threshold) != np.sign(q_unw):
             raise RuntimeError(
-                f"Weighted Q90 sign mismatch for month {month} "
-                f"(weighted={threshold:.2f}, unweighted={q90_unw:.2f}). "
+                f"Weighted Q{percentile:.0f} sign mismatch for month {month} "
+                f"(weighted={threshold:.2f}, unweighted={q_unw:.2f}). "
                 "Weights/data alignment likely broken."
             )
         
@@ -286,9 +310,10 @@ def _compute_threshold_for_month(z500_region: xr.DataArray,
 def compute_monthly_thresholds_rolling(z500_anom: xr.DataArray,
                                        lat_min: float = 50.0,
                                        lat_max: float = 80.0,
-                                       n_workers: int = 20) -> Dict[int, float]:
+                                       n_workers: int = 20,
+                                       percentile: float = 90.0) -> Dict[int, float]:
     """
-    Compute month-specific 90th percentile thresholds using 3-month rolling windows.
+    Compute month-specific Nth percentile thresholds using 3-month rolling windows.
     PARALLELIZED VERSION: Processes each month in parallel using ThreadPoolExecutor.
     
     Following Woollings et al. (2018), each month uses a 3-month window centered
@@ -311,11 +336,14 @@ def compute_monthly_thresholds_rolling(z500_anom: xr.DataArray,
         Maximum latitude for threshold computation (default: 80.0°N)
     n_workers : int, optional
         Number of parallel workers for processing months (default: 20)
+    percentile : float, optional
+        Percentile threshold to compute (default: 90.0)
+        Must be between 0 and 100.
     
     Returns
     -------
     monthly_thresholds : dict
-        Dictionary mapping month number (1-12) to 90th percentile threshold (m).
+        Dictionary mapping month number (1-12) to Nth percentile threshold (m).
         Only months present in the input data will have entries.
     
     Notes
@@ -360,7 +388,7 @@ def compute_monthly_thresholds_rolling(z500_anom: xr.DataArray,
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         # Submit all month computations
         future_to_month = {
-            executor.submit(_compute_threshold_for_month, z500_region, months, month): month
+            executor.submit(_compute_threshold_for_month, z500_region, months, month, percentile): month
             for month in unique_months
         }
         
@@ -379,7 +407,10 @@ def compute_monthly_thresholds_rolling(z500_anom: xr.DataArray,
 
 def compute_monthly_thresholds_rolling_fast(z500_anom: xr.DataArray,
                                              lat_min: float = 50.0,
-                                             lat_max: float = 80.0) -> Dict[int, float]:
+                                             lat_max: float = 80.0,
+                                             percentile: float = 90.0,
+                                             lon_min: Optional[float] = None,
+                                             lon_max: Optional[float] = None) -> Dict[int, float]:
     """
     Fast vectorized version of compute_monthly_thresholds_rolling with AREA-WEIGHTING.
     
@@ -395,11 +426,20 @@ def compute_monthly_thresholds_rolling_fast(z500_anom: xr.DataArray,
         Minimum latitude for threshold computation (default: 50.0°N)
     lat_max : float, optional
         Maximum latitude for threshold computation (default: 80.0°N)
+    percentile : float, optional
+        Percentile threshold to compute (default: 90.0)
+        Must be between 0 and 100.
+    lon_min : float, optional
+        Minimum longitude for threshold computation (default: None = all longitudes).
+        Uses degrees East (0-360). Handles wraparound if lon_min > lon_max.
+    lon_max : float, optional
+        Maximum longitude for threshold computation (default: None = all longitudes).
+        Uses degrees East (0-360). Handles wraparound if lon_min > lon_max.
     
     Returns
     -------
     monthly_thresholds : dict
-        Dictionary mapping month number (1-12) to area-weighted 90th percentile threshold (m).
+        Dictionary mapping month number (1-12) to area-weighted Nth percentile threshold (m).
         Only months present in the input data will have entries.
     
     Notes
@@ -415,8 +455,17 @@ def compute_monthly_thresholds_rolling_fast(z500_anom: xr.DataArray,
     months = z500_anom.time.dt.month.values
     lat_mask = (z500_anom.lat >= lat_min) & (z500_anom.lat <= lat_max)
     
-    # Get subset and convert to float32
+    # Get subset: latitude first
     z500_subset = z500_anom.sel(lat=lat_mask)
+    
+    # Optionally subset by longitude
+    if lon_min is not None and lon_max is not None:
+        if lon_min <= lon_max:
+            lon_mask = (z500_subset.lon >= lon_min) & (z500_subset.lon <= lon_max)
+        else:
+            # Wraparound case (e.g., 350° to 10°)
+            lon_mask = (z500_subset.lon >= lon_min) | (z500_subset.lon <= lon_max)
+        z500_subset = z500_subset.sel(lon=lon_mask)
     z = z500_subset.values.astype("float32", copy=False)  # (time, lat, lon)
     nt, nlat, nlon = z.shape
     
@@ -472,17 +521,17 @@ def compute_monthly_thresholds_rolling_fast(z500_anom: xr.DataArray,
         cw = np.cumsum(sw, dtype=np.float64)
         cw /= cw[-1]
         
-        # Find 90th percentile using linear interpolation
-        thr = float(np.interp(0.90, cw, sd))
+        # Find Nth percentile using linear interpolation
+        thr = float(np.interp(percentile / 100.0, cw, sd))
         thresholds[m] = thr
         
         # Quick consistency check: compare weighted vs unweighted quantile
-        q90_unw = float(np.percentile(data_flat, 90.0))
-        print(f"Month {m:02d}: weighted={thr:.2f}, unweighted={q90_unw:.2f}")
+        q_unw = float(np.percentile(data_flat, percentile))
+        print(f"Month {m:02d}: weighted={thr:.2f}, unweighted={q_unw:.2f}")
         
-        if np.sign(thr) != np.sign(q90_unw):
+        if np.sign(thr) != np.sign(q_unw):
             raise RuntimeError(
-                f"Q90 sign mismatch for month {m}: weighted={thr:.2f}, unweighted={q90_unw:.2f}"
+                f"Q{percentile:.0f} sign mismatch for month {m}: weighted={thr:.2f}, unweighted={q_unw:.2f}"
             )
     
     return thresholds
@@ -662,14 +711,15 @@ def detect_ano_blocking(z500: xr.DataArray,
                         lat_min: float = 50.0,
                         lat_max: float = 80.0,
                         use_monthly_thresholds: bool = True,
-                        return_intermediates: bool = False) -> Tuple[xr.DataArray, ...]:
+                        return_intermediates: bool = False,
+                        percentile: float = 90.0) -> Tuple[xr.DataArray, ...]:
     """
     Complete ANO blocking detection pipeline.
     
     This is a convenience function that combines all steps of the ANO
     blocking detection method:
     1. Compute anomalies
-    2. Compute 90th percentile threshold(s) (from lat_min to lat_max)
+    2. Compute Nth percentile threshold(s) (from lat_min to lat_max)
     3. Create blocking mask (applies threshold to all NH grid points)
     
     Parameters
@@ -687,8 +737,11 @@ def detect_ano_blocking(z500: xr.DataArray,
         (Woollings et al., 2018). If False, use single threshold for all data.
         Default: True
     return_intermediates : bool, optional
-        If True, return (blocked_mask, z500_anom, threshold_90).
+        If True, return (blocked_mask, z500_anom, threshold).
         If False, return only blocked_mask (default: False)
+    percentile : float, optional
+        Percentile threshold to compute (default: 90.0)
+        Must be between 0 and 100.
     
     Returns
     -------
@@ -697,7 +750,7 @@ def detect_ano_blocking(z500: xr.DataArray,
         Blocking is detected at all grid points in the input data
     z500_anom : xarray.DataArray (optional)
         Anomalies, returned only if return_intermediates=True
-    threshold_90 : float or dict (optional)
+    threshold : float or dict (optional)
         Threshold value(s), returned only if return_intermediates=True
     
     Examples
@@ -708,34 +761,35 @@ def detect_ano_blocking(z500: xr.DataArray,
     >>> # Use single threshold (old method)
     >>> blocked_mask = detect_ano_blocking(z500_djf_1years, use_monthly_thresholds=False)
     
-    >>> # Get all intermediate results
-    >>> blocked_mask, z500_anom, threshold_90 = detect_ano_blocking(
-    ...     z500_djf_1years, return_intermediates=True
+    >>> # Get all intermediate results with custom percentile
+    >>> blocked_mask, z500_anom, threshold = detect_ano_blocking(
+    ...     z500_djf_1years, return_intermediates=True, percentile=85
     ... )
-    >>> print(f"Thresholds: {threshold_90}")
+    >>> print(f"Thresholds: {threshold}")
     >>> print(f"Total blocked occurrences: {blocked_mask.sum().values}")
     """
     # Step 1: Compute anomalies
     z500_anom = compute_anomalies(z500)
     
-    # Step 2: Compute 90th percentile threshold(s)
+    # Step 2: Compute Nth percentile threshold(s)
     if use_monthly_thresholds:
-        threshold_90 = compute_monthly_thresholds_rolling(z500_anom, lat_min, lat_max)
+        threshold = compute_monthly_thresholds_rolling(z500_anom, lat_min, lat_max, percentile=percentile)
     else:
-        threshold_90 = compute_threshold_90(z500_anom, lat_min, lat_max)
+        threshold = compute_threshold_percentile(z500_anom, lat_min, lat_max, percentile=percentile)
     
     # Step 3: Create blocking mask (applies threshold to ALL grid points)
-    blocked_mask = create_blocking_mask(z500_anom, threshold_90)
+    blocked_mask = create_blocking_mask(z500_anom, threshold)
     
     if return_intermediates:
-        return blocked_mask, z500_anom, threshold_90
+        return blocked_mask, z500_anom, threshold
     else:
         return blocked_mask
 
 
 # Convenience function for backward compatibility
 def ano_blocking_detection(z500_djf_1years: xr.DataArray,
-                          use_monthly_thresholds: bool = True) -> Tuple[xr.DataArray, xr.DataArray, Union[float, Dict[int, float]]]:
+                          use_monthly_thresholds: bool = True,
+                          percentile: float = 90.0) -> Tuple[xr.DataArray, xr.DataArray, Union[float, Dict[int, float]]]:
     """
     Convenience wrapper matching the exact specification in the request.
     
@@ -751,6 +805,9 @@ def ano_blocking_detection(z500_djf_1years: xr.DataArray,
     use_monthly_thresholds : bool, optional
         If True, use month-specific thresholds (default).
         If False, use single threshold for all data.
+    percentile : float, optional
+        Percentile threshold to compute (default: 90.0)
+        Must be between 0 and 100.
     
     Returns
     -------
@@ -758,20 +815,20 @@ def ano_blocking_detection(z500_djf_1years: xr.DataArray,
         Daily anomalies
     blocked_mask : xarray.DataArray
         Binary blocking mask (applied to all NH grid points)
-    threshold_90 : float or dict
-        90th percentile threshold value(s) (computed from 50-80°N)
+    threshold : float or dict
+        Nth percentile threshold value(s) (computed from 50-80°N)
         Dict if use_monthly_thresholds=True, float otherwise
     """
     z500_anom = compute_anomalies(z500_djf_1years)
     
     if use_monthly_thresholds:
-        threshold_90 = compute_monthly_thresholds_rolling(z500_anom, lat_min=50.0, lat_max=80.0)
+        threshold = compute_monthly_thresholds_rolling(z500_anom, lat_min=50.0, lat_max=80.0, percentile=percentile)
     else:
-        threshold_90 = compute_threshold_90(z500_anom, lat_min=50.0, lat_max=80.0)
+        threshold = compute_threshold_percentile(z500_anom, lat_min=50.0, lat_max=80.0, percentile=percentile)
     
-    blocked_mask = create_blocking_mask(z500_anom, threshold_90)
+    blocked_mask = create_blocking_mask(z500_anom, threshold)
     
-    return z500_anom, blocked_mask, threshold_90
+    return z500_anom, blocked_mask, threshold
 
 
 def calculate_grid_cell_areas(lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
@@ -1231,7 +1288,9 @@ def ano_blocking_complete(z500: xr.DataArray,
                           min_overlap: float = 0.5,
                           use_monthly_thresholds: bool = True,
                           n_workers: int = 20,
-                          anomaly_scale: float = 1.0) -> Tuple[xr.DataArray, Dict]:
+                          anomaly_scale: float = 1.0,
+                          restrict_to_core_season: bool = True,
+                          percentile: float = 90.0) -> Tuple[xr.DataArray, Dict]:
     """
     Complete ANO blocking detection from raw z500 data to blocking frequency.
     
@@ -1274,6 +1333,19 @@ def ano_blocking_complete(z500: xr.DataArray,
         variance is 80% of reanalysis, setting anomaly_scale=1.25 (≈1/0.8)
         would rescale the anomalies to match the reanalysis variance before
         blocking detection.
+    restrict_to_core_season : bool, optional
+        If True (default), restrict blocking event detection to core season months
+        only, even when data includes extended shoulder months for threshold
+        computation. This follows the Woollings et al. (2018) methodology where
+        thresholds use 3-month rolling windows (requiring shoulder months) but
+        blocking events are only reported for the core season:
+        - NDJFM data → events detected only in DJF (Dec, Jan, Feb)
+        - MJJAS data → events detected only in JJA (Jun, Jul, Aug)
+        If False, events are detected in all months present in the data.
+    percentile : float, optional
+        Percentile threshold to compute (default: 90.0).
+        Must be between 0 and 100. Higher values are more restrictive
+        (fewer blocking events detected).
     
     Returns
     -------
@@ -1293,7 +1365,7 @@ def ano_blocking_complete(z500: xr.DataArray,
     
     Examples
     --------
-    >>> # Simple usage with defaults (monthly thresholds)
+    >>> # Simple usage with defaults (monthly thresholds, core season only)
     >>> blocking_frequency, event_info = ano_blocking_complete(z500_djf_1years)
     >>> print(f"Found {event_info['num_events']} blocking events")
     >>> print(f"Mean frequency: {float(blocking_frequency.mean())*100:.2f}%")
@@ -1314,6 +1386,9 @@ def ano_blocking_complete(z500: xr.DataArray,
     >>> # Variance calibration for emulator with 80% of reanalysis variance
     >>> freq, info = ano_blocking_complete(z500_emulator, anomaly_scale=1.25)
     
+    >>> # Detect events in all months (including shoulder months Nov, Mar)
+    >>> freq, info = ano_blocking_complete(z500_ndjfm, restrict_to_core_season=False)
+    
     Notes
     -----
     This function combines all ANO blocking detection steps into a single call.
@@ -1329,6 +1404,11 @@ def ano_blocking_complete(z500: xr.DataArray,
     When anomaly_scale != 1.0, the scaling is applied consistently to the
     anomaly field before both threshold computation and blocking mask
     construction, ensuring internal consistency of the detection algorithm.
+    
+    When restrict_to_core_season=True (default), the shoulder months are used
+    only for threshold computation but blocking events are detected only in
+    the core season (DJF for winter, JJA for summer). This prevents events
+    that start in November or March from being counted as DJF events.
     """
     print("\n" + "="*70)
     print("ANO BLOCKING DETECTION - STEP-BY-STEP PROGRESS")
@@ -1378,20 +1458,20 @@ def ano_blocking_complete(z500: xr.DataArray,
         print(f"   Scaled mean anomaly over 50-80N: {mean_anom_scaled:.2f} m")
         print(f"   Scaled 90th pct of anomalies over 50-80N: {pct90_anom_scaled:.2f} m")
     
-    # Step 2: Compute 90th percentile threshold(s)
-    print(f"\n[Step 2/4] Computing AREA-WEIGHTED 90th percentile threshold(s)...")
+    # Step 2: Compute Nth percentile threshold(s)
+    print(f"\n[Step 2/4] Computing AREA-WEIGHTED {percentile:.0f}th percentile threshold(s)...")
     step_start = time.time()
     if use_monthly_thresholds:
         print(f"   Method: 3-month rolling window per month (Woollings et al., 2018)")
         print(f"   Threshold computed from: {lat_min}°N to {lat_max}°N")
         print(f"   Using fast vectorized computation with area-weighting (cos φ)")
-        threshold_90 = compute_monthly_thresholds_rolling_fast(z500_anom, lat_min, lat_max)
-        threshold_method = '3-month rolling window per month (Woollings et al., 2018, area-weighted)'
+        threshold_90 = compute_monthly_thresholds_rolling_fast(z500_anom, lat_min, lat_max, percentile=percentile)
+        threshold_method = f'3-month rolling window per month (Woollings et al., 2018, area-weighted, {percentile:.0f}th percentile)'
     else:
         print(f"   Method: Single threshold for all data (area-weighted)")
         print(f"   Threshold computed from: {lat_min}°N to {lat_max}°N")
-        threshold_90 = compute_threshold_90(z500_anom, lat_min, lat_max)
-        threshold_method = 'Single threshold for all data (area-weighted)'
+        threshold_90 = compute_threshold_percentile(z500_anom, lat_min, lat_max, percentile=percentile)
+        threshold_method = f'Single threshold for all data (area-weighted, {percentile:.0f}th percentile)'
     step_time = time.time() - step_start
     print(f"   ✅ Completed in {step_time:.2f} seconds")
     if isinstance(threshold_90, dict):
@@ -1418,12 +1498,58 @@ def ano_blocking_complete(z500: xr.DataArray,
     total_points = blocked_mask.size
     print(f"   Blocked points: {n_blocked:,}/{total_points:,} ({100*n_blocked/total_points:.2f}%)")
     
+    # Step 3.5: Restrict to core season if requested
+    # This masks out shoulder months (Nov, Mar for DJF; May, Sep for JJA)
+    # while keeping them in the anomaly/threshold computation
+    detection_season_info = "all months in data"
+    if restrict_to_core_season:
+        months_in_data = set(blocked_mask.time.dt.month.values)
+        
+        # Determine core season based on months present
+        # NDJFM (11,12,1,2,3) -> DJF (12,1,2)
+        # MJJAS (5,6,7,8,9) -> JJA (6,7,8)
+        if months_in_data == {11, 12, 1, 2, 3} or months_in_data == {12, 1, 2}:
+            core_months = {12, 1, 2}
+            detection_season_info = "DJF only (Dec, Jan, Feb)"
+        elif months_in_data == {5, 6, 7, 8, 9} or months_in_data == {6, 7, 8}:
+            core_months = {6, 7, 8}
+            detection_season_info = "JJA only (Jun, Jul, Aug)"
+        elif 12 in months_in_data or 1 in months_in_data or 2 in months_in_data:
+            # Winter-like data, restrict to DJF
+            core_months = {12, 1, 2}
+            detection_season_info = "DJF only (Dec, Jan, Feb)"
+        elif 6 in months_in_data or 7 in months_in_data or 8 in months_in_data:
+            # Summer-like data, restrict to JJA
+            core_months = {6, 7, 8}
+            detection_season_info = "JJA only (Jun, Jul, Aug)"
+        else:
+            # Unknown season pattern, don't restrict
+            core_months = months_in_data
+            detection_season_info = "all months (unknown season pattern)"
+        
+        # Create mask for core season months
+        core_season_mask = np.isin(blocked_mask.time.dt.month.values, list(core_months))
+        
+        # Zero out blocking in shoulder months (keep the timesteps but mark as non-blocked)
+        # This ensures event tracking doesn't start/continue in shoulder months
+        blocked_mask_for_events = blocked_mask.copy()
+        blocked_mask_for_events.values[~core_season_mask, :, :] = 0
+        
+        n_blocked_core = int(blocked_mask_for_events.sum().values)
+        n_shoulder_removed = n_blocked - n_blocked_core
+        print(f"\n   🎯 Restricting event detection to core season: {detection_season_info}")
+        print(f"   Shoulder months masked out: {n_shoulder_removed:,} blocked points removed")
+        print(f"   Core season blocked points: {n_blocked_core:,}")
+    else:
+        blocked_mask_for_events = blocked_mask
+        print(f"\n   ℹ️ Event detection in: {detection_season_info}")
+    
     # Step 4: Identify events and calculate frequency
     print(f"\n[Step 4/4] Identifying blocking events (spatial extent + temporal persistence)...")
     print(f"   Criteria: min_area={min_area/1e6:.1f}×10⁶ km², min_duration={min_duration} days, min_overlap={min_overlap:.1%}")
     step_start = time.time()
     blocking_frequency, event_info = identify_blocking_events(
-        blocked_mask,
+        blocked_mask_for_events,  # Use filtered mask (core season only if restrict_to_core_season=True)
         min_area=min_area,
         min_duration=min_duration,
         min_overlap=min_overlap
@@ -1443,7 +1569,8 @@ def ano_blocking_complete(z500: xr.DataArray,
     
     # Add intermediate results to event_info for reference
     event_info['z500_anom'] = z500_anom
-    event_info['blocked_mask'] = blocked_mask
+    event_info['blocked_mask'] = blocked_mask_for_events  # Use filtered mask (core season only)
+    event_info['blocked_mask_full'] = blocked_mask  # Keep original for reference if needed
     event_info['threshold_90'] = threshold_90
     event_info['parameters'] = {
         'lat_min': lat_min,
@@ -1451,12 +1578,15 @@ def ano_blocking_complete(z500: xr.DataArray,
         'threshold_computed_from': f'{lat_min}-{lat_max}°N',
         'threshold_method': threshold_method,
         'use_monthly_thresholds': use_monthly_thresholds,
+        'percentile': percentile,
         'blocking_detected': 'All NH grid points',
         'min_area_km2': min_area,
         'min_duration_days': min_duration,
         'min_overlap': min_overlap,
         'earth_radius_km': EARTH_RADIUS_KM,
-        'anomaly_scale': anomaly_scale
+        'anomaly_scale': anomaly_scale,
+        'restrict_to_core_season': restrict_to_core_season,
+        'detection_season': detection_season_info
     }
     
     return blocking_frequency, event_info

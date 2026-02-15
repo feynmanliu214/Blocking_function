@@ -10,9 +10,12 @@ Usage in Jupyter Notebook:
     from ANO_PlaSim import ano_blocking_complete
     blocking_freq, event_info = ano_blocking_complete(z500, ...)
 
-    # Cell 2: Compute scores
+    # Cell 2: Compute scores for Eurasia
     from compute_blocking_scores import compute_blocking_scores
-    df = compute_blocking_scores(z500, event_info, ...)
+    df = compute_blocking_scores(z500, event_info, region="Eurasia")
+
+    # Or for Atlantic
+    df = compute_blocking_scores(z500, event_info, region="Atlantic")
 
 Author: Antigravity
 """
@@ -21,6 +24,12 @@ import numpy as np
 import xarray as xr
 import pandas as pd
 from typing import Dict
+
+# Predefined region boundaries (lon_min, lon_max, lat_min, lat_max)
+REGION_BOUNDS = {
+    "Eurasia": (30.0, 100.0, 55.0, 75.0),
+    "Atlantic": (-60.0, 0.0, 55.0, 75.0),
+}
 
 
 def create_spatial_weight_mask(ds_coords: xr.DataArray,
@@ -43,15 +52,12 @@ def create_spatial_weight_mask(ds_coords: xr.DataArray,
 def compute_blocking_scores(
     z500: xr.DataArray,
     event_info: Dict,
-    region_lon_min: float = 30.0,
-    region_lon_max: float = 100.0,
-    region_lat_min: float = 55.0,
-    region_lat_max: float = 75.0,
+    region: str = "Eurasia",
     gamma: float = 5.0
 ) -> pd.DataFrame:
     """
     Compute blocking scores from the output of ano_blocking_complete.
-    
+
     Parameters:
     -----------
     z500 : xr.DataArray
@@ -59,26 +65,37 @@ def compute_blocking_scores(
     event_info : Dict
         The event_info dictionary returned by ano_blocking_complete.
         Must contain keys: 'blocked_mask', 'z500_anom'.
-    region_lon_min, region_lon_max : float
-        Longitude bounds for the target region (default: 30-100 for Eurasia).
-    region_lat_min, region_lat_max : float
-        Latitude bounds for the target region (default: 55-75 for Eurasia).
+    region : str
+        Name of the target region. Supported regions:
+        - "Eurasia": lon [30, 100], lat [55, 75]
+        - "Atlantic": lon [-60, 0], lat [55, 75]
     gamma : float
         Drift penalty constant (default: 5.0).
         The drift penalty is computed as: P_drift = -gamma * sum((lambda_c(k) - lambda_mean)^2)
         where lambda_mean is the event-mean longitude centroid.
         Note: This uses "spread-around-mean" rather than consecutive-day increments.
-        
+
     Returns:
     --------
     pd.DataFrame
         DataFrame containing scored events, sorted by P_total descending.
         Columns: region_event_id, start_time, end_time, duration_days,
                  P_block, P_drift, P_total, mean_lon_centroid.
+
+    Raises:
+    -------
+    ValueError
+        If the specified region is not found in REGION_BOUNDS.
     """
-    
+    # Look up region boundaries
+    if region not in REGION_BOUNDS:
+        available = ", ".join(REGION_BOUNDS.keys())
+        raise ValueError(f"Unknown region '{region}'. Available regions: {available}")
+
+    region_lon_min, region_lon_max, region_lat_min, region_lat_max = REGION_BOUNDS[region]
+
     # 1. Construct Regional Mask W(lambda, phi)
-    print(f"Constructing regional mask: Lon[{region_lon_min}, {region_lon_max}], Lat[{region_lat_min}, {region_lat_max}]")
+    print(f"Constructing regional mask for {region}: Lon[{region_lon_min}, {region_lon_max}], Lat[{region_lat_min}, {region_lat_max}]")
     W = create_spatial_weight_mask(z500, region_lat_min, region_lat_max, region_lon_min, region_lon_max)
     
     # 2. Form Regional Blocking Mask I_R

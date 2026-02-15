@@ -129,71 +129,83 @@ def z500_seasonal_to_daily(file_path, season, extend=False):
         raise ValueError("season must be 'DJF' or 'JJA'")
     
     # --- Open with cftime-safe decoding, fall back if needed ---
-    try:
-        from xarray.coders import CFDatetimeCoder
-        ds = xr.open_dataset(file_path, decode_times=CFDatetimeCoder(use_cftime=True))
-    except Exception:
+    def _open_dataset_with_fallback(path):
         try:
-            ds = xr.open_dataset(file_path, decode_times=True, use_cftime=True)
+            from xarray.coders import CFDatetimeCoder
+            return xr.open_dataset(path, decode_times=CFDatetimeCoder(use_cftime=True))
         except Exception:
-            ds = xr.open_dataset(file_path, decode_times=False)
+            try:
+                return xr.open_dataset(path, decode_times=True, use_cftime=True)
+            except Exception:
+                return xr.open_dataset(path, decode_times=False)
     
-    if "zg" not in ds:
-        raise KeyError("Variable 'zg' not found in the dataset.")
-    if "plev" not in ds:
-        raise KeyError("Coordinate 'plev' not found in the dataset.")
-    
-    # --- Select 500 hPa (exact if present, else nearest) ---
-    p = np.asarray(ds["plev"].values, dtype=float)
-    if np.isclose(p, 500.0).any():
-        zg500 = ds["zg"].sel(plev=500.0)
-    else:
-        nearest_p = p[np.argmin(np.abs(p - 500.0))]
-        zg500 = ds["zg"].sel(plev=nearest_p)
-        zg500 = zg500.assign_attrs(
-            **zg500.attrs,
-            note=f"500 hPa not present; used nearest level {nearest_p} hPa"
-        )
-    
-    # --- Build a boolean mask for requested season ---
-    def month_mask_from_time(time_coord):
-        # Preferred: use .dt.month if time is decoded to datetimes (incl. cftime)
-        try:
-            months = xr.DataArray(time_coord.dt.month.values, dims=("time",))
-            return months
-        except Exception:
-            pass
-        # Fallback: numeric time in days within a single 365-day year
-        t = np.asarray(time_coord.values, dtype=float)
-        if t.ndim != 1:
-            raise ValueError("Unexpected time coordinate shape.")
-        # Map day-of-year (0..364.999) to Gregorian month (no-leap assumption)
-        month_lengths = np.array([31,28,31,30,31,30,31,31,30,31,30,31])
-        month_edges = np.concatenate([[0], np.cumsum(month_lengths)])  # 0..365
-        # Convert fractional days to day index [0..364]
-        doy = np.floor(np.mod(t, 365.0)).astype(int)
-        # Find month m where month_edges[m] <= doy < month_edges[m+1]
-        months = np.searchsorted(month_edges[1:], doy, side="right") + 1
-        return xr.DataArray(months, dims=("time",))
-    
-    months = month_mask_from_time(zg500["time"])
-    if season == "DJF":
-        if extend:
-            # NDJFM: November(11), December(12), January(1), February(2), March(3)
-            season_mask = (months == 11) | (months == 12) | (months == 1) | (months == 2) | (months == 3)
+    with _open_dataset_with_fallback(file_path) as ds:
+        if "zg" not in ds:
+            raise KeyError("Variable 'zg' not found in the dataset.")
+        if "plev" not in ds:
+            raise KeyError("Coordinate 'plev' not found in the dataset.")
+        
+        # --- Select 500 hPa (exact if present, else nearest) ---
+        # Handle both hPa and Pa units
+        p = np.asarray(ds["plev"].values, dtype=float)
+        if np.isclose(p, 500.0).any():
+            zg500 = ds["zg"].sel(plev=500.0)
+        elif np.isclose(p, 50000.0).any():
+            zg500 = ds["zg"].sel(plev=50000.0)
         else:
-            # DJF: December(12), January(1), February(2)
-            season_mask = (months == 12) | (months == 1) | (months == 2)
-    else:  # JJA
-        if extend:
-            # MJJAS: May(5), June(6), July(7), August(8), September(9)
-            season_mask = (months == 5) | (months == 6) | (months == 7) | (months == 8) | (months == 9)
-        else:
-            # JJA: June(6), July(7), August(8)
-            season_mask = (months == 6) | (months == 7) | (months == 8)
-    
-    # --- Subset to season ---
-    z500_season = zg500.sel(time=zg500["time"][season_mask])
+            # Try finding anything close to 500 hPa in either unit
+            if p.max() > 2000:  # Likely in Pa
+                target = 50000.0
+            else:
+                target = 500.0
+            nearest_p = p[np.argmin(np.abs(p - target))]
+            zg500 = ds["zg"].sel(plev=nearest_p)
+            zg500 = zg500.assign_attrs(
+                **zg500.attrs,
+                note=f"500 hPa/50000 Pa not found; used nearest level {nearest_p}"
+            )
+        
+        # --- Build a boolean mask for requested season ---
+        def month_mask_from_time(time_coord):
+            # Preferred: use .dt.month if time is decoded to datetimes (incl. cftime)
+            try:
+                months = xr.DataArray(time_coord.dt.month.values, dims=("time",))
+                return months
+            except Exception:
+                pass
+            # Fallback: numeric time in days within a single 365-day year
+            t = np.asarray(time_coord.values, dtype=float)
+            if t.ndim != 1:
+                raise ValueError("Unexpected time coordinate shape.")
+            # Map day-of-year (0..364.999) to Gregorian month (no-leap assumption)
+            month_lengths = np.array([31,28,31,30,31,30,31,31,30,31,30,31])
+            month_edges = np.concatenate([[0], np.cumsum(month_lengths)])  # 0..365
+            # Convert fractional days to day index [0..364]
+            doy = np.floor(np.mod(t, 365.0)).astype(int)
+            # Find month m where month_edges[m] <= doy < month_edges[m+1]
+            months = np.searchsorted(month_edges[1:], doy, side="right") + 1
+            return xr.DataArray(months, dims=("time",))
+        
+        months = month_mask_from_time(zg500["time"])
+        if season == "DJF":
+            if extend:
+                # NDJFM: November(11), December(12), January(1), February(2), March(3)
+                season_mask = (months == 11) | (months == 12) | (months == 1) | (months == 2) | (months == 3)
+            else:
+                # DJF: December(12), January(1), February(2)
+                season_mask = (months == 12) | (months == 1) | (months == 2)
+        else:  # JJA
+            if extend:
+                # MJJAS: May(5), June(6), July(7), August(8), September(9)
+                season_mask = (months == 5) | (months == 6) | (months == 7) | (months == 8) | (months == 9)
+            else:
+                # JJA: June(6), July(7), August(8)
+                season_mask = (months == 6) | (months == 7) | (months == 8)
+        
+        # --- Subset to season ---
+        # Use isel with boolean mask instead of sel to handle potential duplicate time values
+        season_indices = np.where(season_mask.values)[0]
+        z500_season = zg500.isel(time=season_indices).load()
     
     # --- Convert from 6-hourly to daily averages ---
     # The data has 4 timesteps per day (every 6 hours)
