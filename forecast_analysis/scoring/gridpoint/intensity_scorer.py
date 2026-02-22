@@ -2,8 +2,9 @@
 """
 Gridpoint Persistence Intensity Scorer.
 
-This scorer computes a moving-average maximum intensity score using the same
-DG-style per-gridpoint persistence mask as the mean blocked-area scorer.
+This scorer computes a moving-average maximum intensity score using strict
+per-window threshold exceedance: a grid point contributes to a window only if
+it exceeds the daily threshold on all days of the window.
 """
 
 from pathlib import Path
@@ -19,7 +20,6 @@ from .persistence_scorer import (
     GridpointPersistenceScorer,
     apply_monthly_threshold,
     compute_anomalies_from_climatology,
-    compute_dg_blocking_mask,
     create_region_mask,
 )
 
@@ -28,13 +28,61 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
     """
     Scorer for moving-average maximum blocking intensity.
 
-    For blocked grid points only, compute an L-day running mean of the anomaly
-    field and return the maximum value inside the scoring window.
+    For each candidate L-day window (L = min_persistence), a grid point is
+    considered blocked only if it exceeds the threshold on all L days. The
+    score is the maximum window-mean anomaly across valid blocked points.
     """
 
     name = "GridpointIntensityScorer"
-    description = "DG-style per-gridpoint blocking with moving-average max intensity"
+    description = "Strict per-window threshold exceedance with moving-average max intensity"
     requires_blocking_detection = False
+
+    @staticmethod
+    def _compute_window_max_intensity(
+        z500_anom_np: np.ndarray,
+        above_threshold_np: np.ndarray,
+        region_mask_np: np.ndarray,
+        start_idx: int,
+        end_idx: int,
+        window_days: int,
+        fallback_to_nonblocked: bool,
+    ) -> float:
+        """
+        Compute max intensity over [start_idx, end_idx) using strict window logic.
+
+        A grid point is valid at start t only if it is above threshold on all
+        days in [t, t + window_days).
+        """
+        actual_duration = end_idx - start_idx
+        if actual_duration < window_days:
+            raise ValueError(
+                f"Actual window duration ({actual_duration}) is less than "
+                f"window_days ({window_days})"
+            )
+
+        max_start_idx = end_idx - window_days
+        max_intensity = 0.0
+
+        for t in range(start_idx, max_start_idx + 1):
+            t_end = t + window_days
+
+            window_mean = np.mean(z500_anom_np[t:t_end, :, :], axis=0)
+            blocked_at_t = np.all(above_threshold_np[t:t_end], axis=0) & region_mask_np
+
+            if np.any(blocked_at_t):
+                max_at_t = float(np.max(window_mean[blocked_at_t]))
+            elif fallback_to_nonblocked:
+                if np.any(region_mask_np):
+                    max_at_t = float(np.max(window_mean[region_mask_np]))
+                else:
+                    max_at_t = 0.0
+            else:
+                max_at_t = 0.0
+
+            if max_at_t > max_intensity:
+                max_intensity = max_at_t
+
+        return float(max_intensity)
 
     def compute_intensity_score_from_anomalies(
         self,
@@ -47,18 +95,18 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
         region_lon_max: Optional[float] = None,
         region_lat_min: Optional[float] = None,
         region_lat_max: Optional[float] = None,
-        running_mean_days: Optional[int] = None,
         fallback_to_nonblocked: bool = False,
     ) -> float:
         """
         Compute maximum intensity score from pre-computed anomalies.
-        """
-        if running_mean_days is None:
-            running_mean_days = self.min_persistence
 
-        if duration_days < running_mean_days:
+        Uses strict per-window threshold exceedance with window size equal to
+        min_persistence.
+        """
+        window_days = self.min_persistence
+        if duration_days < window_days:
             raise ValueError(
-                f"duration_days ({duration_days}) must be >= running_mean_days ({running_mean_days})"
+                f"duration_days ({duration_days}) must be >= window_days ({window_days})"
             )
 
         if all(v is not None for v in [region_lon_min, region_lon_max,
@@ -79,46 +127,17 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
             )
 
         above_threshold = apply_monthly_threshold(z500_anom, threshold_90)
-        blocking_mask = compute_dg_blocking_mask(above_threshold, self.min_persistence)
-
         region_mask = create_region_mask(z500_anom, lon_min, lon_max, lat_min, lat_max)
-        region_mask_np = region_mask.values
 
-        max_start_idx = onset_time_idx + duration_days - running_mean_days
-        z500_anom_np = z500_anom.values
-        blocking_mask_np = blocking_mask.values
-        has_block_in_window = np.any(
-            blocking_mask_np[onset_time_idx:window_end_idx] & region_mask_np
+        return self._compute_window_max_intensity(
+            z500_anom_np=z500_anom.values,
+            above_threshold_np=above_threshold.values,
+            region_mask_np=region_mask.values,
+            start_idx=onset_time_idx,
+            end_idx=window_end_idx,
+            window_days=window_days,
+            fallback_to_nonblocked=fallback_to_nonblocked,
         )
-
-        max_intensity = 0.0
-        if (not has_block_in_window) and fallback_to_nonblocked:
-            max_intensity = -np.inf
-            for t in range(onset_time_idx, max_start_idx + 1):
-                running_mean = np.mean(
-                    z500_anom_np[t:t + running_mean_days, :, :],
-                    axis=0
-                )
-                max_at_t = np.max(running_mean[region_mask_np])
-                if max_at_t > max_intensity:
-                    max_intensity = max_at_t
-            if max_intensity < 0.0:
-                max_intensity = 0.0
-        else:
-            for t in range(onset_time_idx, max_start_idx + 1):
-                blocked_at_t = blocking_mask_np[t] & region_mask_np
-                if not np.any(blocked_at_t):
-                    continue
-
-                running_mean = np.mean(
-                    z500_anom_np[t:t + running_mean_days, :, :],
-                    axis=0
-                )
-                max_at_t = np.max(running_mean[blocked_at_t])
-                if max_at_t > max_intensity:
-                    max_intensity = max_at_t
-
-        return float(max_intensity)
 
     def compute_intensity_score(
         self,
@@ -130,18 +149,15 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
         region_lon_max: Optional[float] = None,
         region_lat_min: Optional[float] = None,
         region_lat_max: Optional[float] = None,
-        running_mean_days: Optional[int] = None,
         fallback_to_nonblocked: bool = False,
     ) -> float:
         """
         Compute maximum intensity score for a time window from raw Z500.
         """
-        if running_mean_days is None:
-            running_mean_days = self.min_persistence
-
-        if duration_days < running_mean_days:
+        window_days = self.min_persistence
+        if duration_days < window_days:
             raise ValueError(
-                f"duration_days ({duration_days}) must be >= running_mean_days ({running_mean_days})"
+                f"duration_days ({duration_days}) must be >= window_days ({window_days})"
             )
 
         if all(v is not None for v in [region_lon_min, region_lon_max,
@@ -159,7 +175,6 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
 
         z500_anom = compute_anomalies_from_climatology(z500, self.climatology)
         above_threshold = apply_monthly_threshold(z500_anom, self.thresholds)
-        blocking_mask = compute_dg_blocking_mask(above_threshold, self.min_persistence)
 
         time_vals = z500_anom.time.values
         start_idx = np.searchsorted(time_vals, start_time)
@@ -170,51 +185,17 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
                 f"Data time range: [{time_vals[0]}, {time_vals[-1]}]"
             )
 
-        actual_duration = end_idx - start_idx
-        if actual_duration < running_mean_days:
-            raise ValueError(
-                f"Actual window duration ({actual_duration}) is less than "
-                f"running_mean_days ({running_mean_days})"
-            )
-
         region_mask = create_region_mask(z500, lon_min, lon_max, lat_min, lat_max)
-        region_mask_np = region_mask.values
 
-        max_start_idx = end_idx - running_mean_days
-        z500_anom_np = z500_anom.values
-        blocking_mask_np = blocking_mask.values
-        has_block_in_window = np.any(
-            blocking_mask_np[start_idx:end_idx] & region_mask_np
+        return self._compute_window_max_intensity(
+            z500_anom_np=z500_anom.values,
+            above_threshold_np=above_threshold.values,
+            region_mask_np=region_mask.values,
+            start_idx=start_idx,
+            end_idx=end_idx,
+            window_days=window_days,
+            fallback_to_nonblocked=fallback_to_nonblocked,
         )
-
-        max_intensity = 0.0
-        if (not has_block_in_window) and fallback_to_nonblocked:
-            max_intensity = -np.inf
-            for t in range(start_idx, max_start_idx + 1):
-                running_mean = np.mean(
-                    z500_anom_np[t:t + running_mean_days, :, :],
-                    axis=0
-                )
-                max_at_t = np.max(running_mean[region_mask_np])
-                if max_at_t > max_intensity:
-                    max_intensity = max_at_t
-            if max_intensity < 0.0:
-                max_intensity = 0.0
-        else:
-            for t in range(start_idx, max_start_idx + 1):
-                blocked_at_t = blocking_mask_np[t] & region_mask_np
-                if not np.any(blocked_at_t):
-                    continue
-
-                running_mean = np.mean(
-                    z500_anom_np[t:t + running_mean_days, :, :],
-                    axis=0
-                )
-                max_at_t = np.max(running_mean[blocked_at_t])
-                if max_at_t > max_intensity:
-                    max_intensity = max_at_t
-
-        return float(max_intensity)
 
     def get_score_columns(self):
         """Return score column names."""
@@ -233,7 +214,6 @@ def compute_gridpoint_intensity_score(
     climatology_path: Union[str, Path] = DEFAULT_CLIMATOLOGY_PATH,
     thresholds_path: Union[str, Path] = DEFAULT_THRESHOLDS_PATH,
     min_persistence: int = 5,
-    running_mean_days: Optional[int] = None,
     fallback_to_nonblocked: bool = False,
     region_lon_min: Optional[float] = None,
     region_lon_max: Optional[float] = None,
@@ -257,6 +237,5 @@ def compute_gridpoint_intensity_score(
         region_lon_max=region_lon_max,
         region_lat_min=region_lat_min,
         region_lat_max=region_lat_max,
-        running_mean_days=running_mean_days,
         fallback_to_nonblocked=fallback_to_nonblocked,
     )

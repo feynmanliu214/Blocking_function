@@ -101,10 +101,13 @@ def compute_anomalies_from_climatology(
     # Need to align coordinates properly
     clim_for_days = climatology.sel(dayofyear=doy)
 
-    # The selection creates a 'dayofyear' coordinate we need to drop
-    # and align with the time dimension
-    clim_for_days = clim_for_days.assign_coords(time=z500.time)
-    clim_for_days = clim_for_days.swap_dims({"dayofyear": "time"})
+    # Handle different xarray versions:
+    # Newer xarray: .sel() with DataArray indexer already replaces 'dayofyear'
+    # dim with 'time', so swap_dims would fail.
+    # Older xarray: 'dayofyear' may still be a dimension that needs swapping.
+    if "dayofyear" in clim_for_days.dims:
+        clim_for_days = clim_for_days.assign_coords(time=z500.time)
+        clim_for_days = clim_for_days.swap_dims({"dayofyear": "time"})
     clim_for_days = clim_for_days.drop_vars("dayofyear", errors="ignore")
 
     z500_anom = z500 - clim_for_days

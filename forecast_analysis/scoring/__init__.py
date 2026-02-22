@@ -6,7 +6,7 @@ This package provides two categories of scoring methods:
 
 1. Grid-point-based scoring:
    - GridpointPersistenceScorer: DG-style per-gridpoint blocking with 5-day persistence
-   - GridpointIntensityScorer: moving-average maximum anomaly intensity on blocked points
+   - GridpointIntensityScorer: strict-window maximum anomaly intensity
 
 2. ANO-based event scoring:
    - ANOScorer: Unified scorer with configurable event detection and drift penalty
@@ -312,8 +312,8 @@ def compute_res_score(
             return float(df[primary_col].max())
 
     elif scorer_name in ('GridpointPersistenceScorer', 'GridpointIntensityScorer'):
-        # Gridpoint scorers use DG-style per-gridpoint blocking and monthly thresholds.
-        # They do not use event_info and work directly with anomalies.
+        # Gridpoint scorers do not use event_info and work directly with
+        # anomalies + monthly thresholds.
         if threshold_90 is None:
             raise ValueError(
                 f"{scorer_name} requires threshold_90 parameter. "
@@ -339,8 +339,12 @@ def compute_res_score(
                 region_lat_max=lat_max,
             )
 
-        running_mean_days = scorer_params.get('running_mean_days')
         fallback_to_nonblocked = scorer_params.get('fallback_to_nonblocked', False)
+        if 'running_mean_days' in scorer_params:
+            raise ValueError(
+                "running_mean_days has been removed from GridpointIntensityScorer. "
+                "Window length is fixed to min_persistence."
+            )
         scorer = GridpointIntensityScorer(min_persistence=min_persistence)
         return scorer.compute_intensity_score_from_anomalies(
             z500_anom=z500_anom,
@@ -351,7 +355,6 @@ def compute_res_score(
             region_lon_max=lon_max,
             region_lat_min=lat_min,
             region_lat_max=lat_max,
-            running_mean_days=running_mean_days,
             fallback_to_nonblocked=fallback_to_nonblocked,
         )
 
