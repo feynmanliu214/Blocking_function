@@ -1208,7 +1208,8 @@ def create_event_animation_gif_fast(event_id, ano_stats, save_path=None,
 def create_duration_specific_gifs_fast(event_info, z500_data, method, season,
                                        target_durations,
                                        output_base_dir='/home/zhixingliu/projects/aires/figures',
-                                       fps=1, dpi=100, max_lat_points=90, max_lon_points=360):
+                                       fps=1, dpi=100, max_lat_points=90, max_lon_points=360,
+                                       overlay_mode='blocking', u250_path=None):
     """
     Create GIFs for events with specific durations.
     
@@ -1232,7 +1233,11 @@ def create_duration_specific_gifs_fast(event_info, z500_data, method, season,
         Resolution
     max_lat_points, max_lon_points : int
         Maximum grid points for downsampling
-    
+    overlay_mode : str
+        'blocking' (default) or 'dynamics'
+    u250_path : str, optional
+        Path to NetCDF file with 250 hPa zonal wind (required for 'dynamics')
+
     Returns
     -------
     dict
@@ -1302,7 +1307,9 @@ def create_duration_specific_gifs_fast(event_info, z500_data, method, season,
                 dpi=dpi,
                 max_lat_points=max_lat_points,
                 max_lon_points=max_lon_points,
-                event_start_times=event_start_times
+                event_start_times=event_start_times,
+                overlay_mode=overlay_mode,
+                u250_path=u250_path
             )
             gif_paths[target_dur] = gif_path
         except Exception as exc:
