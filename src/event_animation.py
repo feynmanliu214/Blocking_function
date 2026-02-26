@@ -4,6 +4,10 @@ Event Animation Module
 This module provides functions for creating animated GIFs of blocking events.
 Includes both standard and fast (optimized for large datasets) animation methods.
 
+Overlay modes:
+- 'blocking' (default): Shows event boundary and blocked region contours
+- 'dynamics': Shows jet stream isotachs (U250) over Z500 anomaly wave pattern
+
 Fast version features:
 - Smart event indexing (O(T) instead of repeated scans)
 - Minimal data extraction (loads only needed timesteps/latitudes)
