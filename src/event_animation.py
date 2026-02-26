@@ -707,7 +707,8 @@ def create_event_animation_gif_fast(event_id, ano_stats, save_path=None,
                                     region_lon_min=30.0, region_lon_max=100.0,
                                     region_lat_min=55.0, region_lat_max=75.0,
                                     # New parameter to visualize entire simulation
-                                    animate_full_simulation=False):
+                                    animate_full_simulation=False,
+                                    overlay_mode='blocking', u250_path=None):
     """
     Create animated GIF for a blocking event or entire simulation.
     
@@ -789,12 +790,23 @@ def create_event_animation_gif_fast(event_id, ano_stats, save_path=None,
     lon = z500_anom_raw.lon.values
     time_coords = z500_anom_raw.time.values
 
+    # Validate overlay_mode
+    if overlay_mode not in ('blocking', 'dynamics'):
+        raise ValueError(f"overlay_mode must be 'blocking' or 'dynamics', got '{overlay_mode}'")
+
     lat_mask = (lat >= 25) & (lat <= 90)
     lat_indices = np.where(lat_mask)[0]
     lat_subset = lat[lat_mask]
 
     event_time_list = list(map(int, event_times))
     print(f"  Extracting {len(event_time_list)} timesteps × {len(lat_subset)} lats")
+
+    # Load and subset U250 if dynamics mode
+    u250_event = None
+    if overlay_mode == 'dynamics':
+        u250_full = _load_u250(u250_path)
+        # Subset to matching times and latitudes
+        u250_event = u250_full.isel(time=event_time_list, lat=lat_indices).values
 
     # Extract minimal data (no 14GB loads!)
     z500_event = z500_anom_raw.isel(time=event_time_list, lat=lat_indices).values
@@ -831,9 +843,13 @@ def create_event_animation_gif_fast(event_id, ano_stats, save_path=None,
         z500_ds = z500_event[:, ::lat_step, ::lon_step]
         event_mask_ds = event_mask_event[:, ::lat_step, ::lon_step]
         blocked_mask_ds = blocked_mask_event[:, ::lat_step, ::lon_step]
+        if overlay_mode == 'dynamics' and u250_event is not None:
+            u250_ds = u250_event[:, ::lat_step, ::lon_step]
     else:
         lat_ds, lon_ds = lat_subset, lon
         z500_ds, event_mask_ds, blocked_mask_ds = z500_event, event_mask_event, blocked_mask_event
+        if overlay_mode == 'dynamics' and u250_event is not None:
+            u250_ds = u250_event
 
     print(f"  Final grid: {len(lat_ds)} × {len(lon_ds)}")
     
@@ -974,13 +990,27 @@ def create_event_animation_gif_fast(event_id, ano_stats, save_path=None,
         cf = ax_map.contourf(lon_cyclic, lat_ds, z500_cyc,
                          levels=levels_anom, cmap='RdBu_r',
                          transform=ccrs.PlateCarree(), alpha=0.6, extend='both')
-        if event_cyc.any():
-            ax_map.contour(lon_cyclic, lat_ds, event_cyc, levels=[0.5],
-                      colors='black', linewidths=3, transform=ccrs.PlateCarree())
-        if blocked_cyc.any():
-            ax_map.contour(lon_cyclic, lat_ds, blocked_cyc, levels=[0.5],
-                      colors='orange', linewidths=1.5, linestyles='--',
-                      transform=ccrs.PlateCarree(), alpha=0.5)
+        if overlay_mode == 'blocking':
+            if event_cyc.any():
+                ax_map.contour(lon_cyclic, lat_ds, event_cyc, levels=[0.5],
+                          colors='black', linewidths=3, transform=ccrs.PlateCarree())
+            if blocked_cyc.any():
+                ax_map.contour(lon_cyclic, lat_ds, blocked_cyc, levels=[0.5],
+                          colors='orange', linewidths=1.5, linestyles='--',
+                          transform=ccrs.PlateCarree(), alpha=0.5)
+        else:
+            # Dynamics mode: U250 jet isotachs
+            u250_t = u250_ds[frame_idx]
+            if has_cyclic_point:
+                u250_cyc = u250_t
+            else:
+                u250_cyc = np.concatenate([u250_t, u250_t[:, :1]], axis=1)
+            jet_levels = [20, 30, 40, 50]
+            jet_linewidths = [1.0, 1.5, 2.0, 2.5]
+            ax_map.contour(lon_cyclic, lat_ds, u250_cyc,
+                          levels=jet_levels, colors='darkgreen',
+                          linewidths=jet_linewidths,
+                          transform=ccrs.PlateCarree())
 
         ax_map.coastlines(linewidth=0.5)
         ax_map.add_feature(cfeature.BORDERS, linewidth=0.3, alpha=0.5)
@@ -1032,7 +1062,10 @@ def create_event_animation_gif_fast(event_id, ano_stats, save_path=None,
             # Second line: Day xx/xx | date | Area
             title += f'\nDay {frame_idx+1}/{duration} | {time_str} | Area: ${area:.2f} \\times 10^6\\ \\mathrm{{km}}^2$'
             if not show_diagnostics:
-                title += '\nBlack contour = Blocking events | Orange dashed = All blocked regions'
+                if overlay_mode == 'blocking':
+                    title += '\nBlack contour = Blocking events | Orange dashed = All blocked regions'
+                else:
+                    title += '\nGreen contours = Jet stream isotachs (20/30/40/50 m/s)'
         else:
             title = f'Event {current_event_id}'
             if title_prefix:
@@ -1040,7 +1073,10 @@ def create_event_animation_gif_fast(event_id, ano_stats, save_path=None,
             # Use LaTeX formatting for area (matplotlib supports this)
             title += f'\nDay {frame_idx+1}/{duration} | {time_str} | Area: ${area:.2f} \\times 10^6\\ \\mathrm{{km}}^2$'
             if not show_diagnostics:
-                title += '\nBlack contour = Event boundary | Orange dashed = All blocked regions'
+                if overlay_mode == 'blocking':
+                    title += '\nBlack contour = Event boundary | Orange dashed = All blocked regions'
+                else:
+                    title += '\nGreen contours = Jet stream isotachs (20/30/40/50 m/s)'
         
         ax_map.set_title(title, fontsize=12, fontweight='bold', pad=10)
         
