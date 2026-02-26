@@ -93,30 +93,43 @@ def _load_u250(u250_path):
 
     ds = xr.open_dataset(u250_path)
 
-    # Find the zonal wind variable
-    var_name = None
-    for name in _UA_VAR_NAMES:
-        if name in ds.data_vars:
-            var_name = name
-            break
-    if var_name is None:
+    try:
+        # Find the zonal wind variable
+        var_name = None
+        for name in _UA_VAR_NAMES:
+            if name in ds.data_vars:
+                var_name = name
+                break
+        if var_name is None:
+            raise KeyError(
+                f"No recognized zonal wind variable found in {u250_path}. "
+                f"Tried: {_UA_VAR_NAMES}. Available: {list(ds.data_vars)}"
+            )
+
+        ua = ds[var_name]
+
+        # Select 250 hPa level if pressure level dimension exists
+        plev_names = ["plev", "level", "lev", "pressure"]
+        found_plev = False
+        for pname in plev_names:
+            if pname in ua.dims:
+                ua = ua.sel(
+                    {pname: U250_LEVEL}, method="nearest", tolerance=100.0
+                )
+                found_plev = True
+                break
+
+        if not found_plev:
+            raise ValueError(
+                f"No pressure dimension found in variable '{var_name}' "
+                f"from {u250_path}. Expected one of {plev_names}, "
+                f"but got dims: {ua.dims}"
+            )
+
+        result = ua.compute()
+    finally:
         ds.close()
-        raise KeyError(
-            f"No recognized zonal wind variable found in {u250_path}. "
-            f"Tried: {_UA_VAR_NAMES}. Available: {list(ds.data_vars)}"
-        )
 
-    ua = ds[var_name]
-
-    # Select 250 hPa level if pressure level dimension exists
-    plev_names = ["plev", "level", "lev", "pressure"]
-    for pname in plev_names:
-        if pname in ua.dims:
-            ua = ua.sel({pname: U250_LEVEL})
-            break
-
-    result = ua.compute()
-    ds.close()
     return result
 
 
