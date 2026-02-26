@@ -364,9 +364,10 @@ def convert_abs_events_to_ano_format(abs_event_info, z500_data):
 # Standard Animation (using Matplotlib FuncAnimation)
 # =============================================================================
 
-def create_event_animation_gif(event_id, ano_stats, save_path=None, 
-                                title_prefix='', figsize=(12, 10), 
-                                fps=2, dpi=100):
+def create_event_animation_gif(event_id, ano_stats, save_path=None,
+                                title_prefix='', figsize=(12, 10),
+                                fps=2, dpi=100,
+                                overlay_mode='blocking', u250_path=None):
     """
     Create an animated GIF showing the time evolution of a blocking event.
     
@@ -389,7 +390,13 @@ def create_event_animation_gif(event_id, ano_stats, save_path=None,
         Frames per second for the animation (default: 2)
     dpi : int
         Resolution of the output GIF (default: 100)
-    
+    overlay_mode : str
+        'blocking' (default) shows event boundary and blocked regions;
+        'dynamics' shows U250 jet stream isotachs instead.
+    u250_path : str or None
+        Path to NetCDF file with zonal wind on pressure levels.
+        Required when overlay_mode='dynamics'.
+
     Returns
     -------
     str
@@ -438,7 +445,19 @@ def create_event_animation_gif(event_id, ano_stats, save_path=None,
     print(f"  Debug: event_mask shape: {event_mask.shape}")
     print(f"  Debug: blocked_mask shape: {blocked_mask.shape}")
     print(f"  Debug: lat length: {len(lat)}, lon length: {len(lon)}")
-    
+
+    # Validate overlay_mode
+    if overlay_mode not in ('blocking', 'dynamics'):
+        raise ValueError(f"overlay_mode must be 'blocking' or 'dynamics', got '{overlay_mode}'")
+
+    # Load U250 data if dynamics mode
+    u250_data = None
+    if overlay_mode == 'dynamics':
+        u250_full = _load_u250(u250_path)
+        # Align time/lat/lon with z500_anom
+        u250_data = u250_full.sel(time=z500_anom.time, lat=z500_anom.lat, lon=z500_anom.lon,
+                                  method='nearest')
+
     # Get the time steps where this event occurs
     event_times = np.where((event_mask == event_id).any(axis=(1, 2)))[0]
     
@@ -507,19 +526,32 @@ def create_event_animation_gif(event_id, ano_stats, save_path=None,
                      alpha=0.6, extend='both')
     
     # Create initial contours (will be updated)
-    event_contour = ax.contour(lon_cyclic, lat, event_mask_0_cyclic, 
-                               levels=[0.5], 
-                               colors='black', 
-                               linewidths=3,
-                               transform=ccrs.PlateCarree())
-    
-    blocked_contour = ax.contour(lon_cyclic, lat, blocked_0_cyclic, 
-                                 levels=[0.5], 
-                                 colors='orange', 
-                                 linewidths=1.5,
-                                 linestyles='--',
-                                 transform=ccrs.PlateCarree(),
-                                 alpha=0.5)
+    if overlay_mode == 'blocking':
+        # Event boundary contour (black)
+        event_contour = ax.contour(lon_cyclic, lat, event_mask_0_cyclic,
+                                   levels=[0.5],
+                                   colors='black',
+                                   linewidths=3,
+                                   transform=ccrs.PlateCarree())
+        # All blocked regions contour (orange dashed)
+        blocked_contour = ax.contour(lon_cyclic, lat, blocked_0_cyclic,
+                                     levels=[0.5],
+                                     colors='orange',
+                                     linewidths=1.5,
+                                     linestyles='--',
+                                     transform=ccrs.PlateCarree(),
+                                     alpha=0.5)
+    else:
+        # Dynamics mode: U250 jet stream isotachs
+        u250_0 = u250_data.isel(time=t_idx_0)
+        u250_0_cyclic, _ = add_cyclic_point(u250_0.values, coord=lon)
+        jet_levels = [20, 30, 40, 50]
+        jet_linewidths = [1.0, 1.5, 2.0, 2.5]
+        ax.contour(lon_cyclic, lat, u250_0_cyclic,
+                   levels=jet_levels,
+                   colors='darkgreen',
+                   linewidths=jet_linewidths,
+                   transform=ccrs.PlateCarree())
     
     # Add colorbar
     cbar = fig.colorbar(cf, ax=ax, orientation='horizontal', 
@@ -532,10 +564,13 @@ def create_event_animation_gif(event_id, ano_stats, save_path=None,
     if title_prefix:
         title_text += f' - {title_prefix}'
     title_text += f'\nDay 1/{len(event_times)} | {time_str_0} | Area: {area_0:.2f}×10⁶ km²\n'
-    title_text += 'Black contour = Event boundary | Orange dashed = All blocked regions'
-    
+    if overlay_mode == 'blocking':
+        title_text += 'Black contour = Event boundary | Orange dashed = All blocked regions'
+    else:
+        title_text += 'Green contours = Jet stream isotachs (20/30/40/50 m/s)'
+
     title = ax.set_title(title_text, fontsize=12, fontweight='bold', pad=10)
-    
+
     # Animation update function
     def update(frame):
         """Update function for animation"""
@@ -572,23 +607,35 @@ def create_event_animation_gif(event_id, ano_stats, save_path=None,
                             transform=ccrs.PlateCarree(),
                             alpha=0.6, extend='both')
         
-        # Add event boundary contour
-        if event_mask_t.values.any():
-            ax.contour(lon_cyclic, lat, event_mask_t_cyclic, 
-                      levels=[0.5], 
-                      colors='black', 
-                      linewidths=3,
-                      transform=ccrs.PlateCarree())
-        
-        # Add all blocked regions contour
-        if blocked_t.values.any():
-            ax.contour(lon_cyclic, lat, blocked_t_cyclic, 
-                      levels=[0.5], 
-                      colors='orange', 
-                      linewidths=1.5,
-                      linestyles='--',
-                      transform=ccrs.PlateCarree(),
-                      alpha=0.5)
+        if overlay_mode == 'blocking':
+            # Add event boundary contour
+            if event_mask_t.values.any():
+                ax.contour(lon_cyclic, lat, event_mask_t_cyclic,
+                          levels=[0.5],
+                          colors='black',
+                          linewidths=3,
+                          transform=ccrs.PlateCarree())
+
+            # Add all blocked regions contour
+            if blocked_t.values.any():
+                ax.contour(lon_cyclic, lat, blocked_t_cyclic,
+                          levels=[0.5],
+                          colors='orange',
+                          linewidths=1.5,
+                          linestyles='--',
+                          transform=ccrs.PlateCarree(),
+                          alpha=0.5)
+        else:
+            # Dynamics mode: U250 jet stream isotachs
+            u250_t = u250_data.isel(time=t_idx)
+            u250_t_cyclic, _ = add_cyclic_point(u250_t.values, coord=lon)
+            jet_levels = [20, 30, 40, 50]
+            jet_linewidths = [1.0, 1.5, 2.0, 2.5]
+            ax.contour(lon_cyclic, lat, u250_t_cyclic,
+                       levels=jet_levels,
+                       colors='darkgreen',
+                       linewidths=jet_linewidths,
+                       transform=ccrs.PlateCarree())
         
         # Re-add coastlines and features (since collections were cleared)
         ax.coastlines(linewidth=0.5, color='black')
@@ -601,7 +648,10 @@ def create_event_animation_gif(event_id, ano_stats, save_path=None,
         if title_prefix:
             title_text += f' - {title_prefix}'
         title_text += f'\nDay {day_idx+1}/{len(event_times)} | {time_str} | Area: {area_day:.2f}×10⁶ km²\n'
-        title_text += 'Black contour = Event boundary | Orange dashed = All blocked regions'
+        if overlay_mode == 'blocking':
+            title_text += 'Black contour = Event boundary | Orange dashed = All blocked regions'
+        else:
+            title_text += 'Green contours = Jet stream isotachs (20/30/40/50 m/s)'
         title.set_text(title_text)
         
         # Print progress
