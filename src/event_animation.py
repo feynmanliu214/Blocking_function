@@ -827,11 +827,12 @@ def create_event_animation_gif_fast(event_id, ano_stats, save_path=None,
     u250_event = None
     if overlay_mode == 'dynamics':
         u250_full = _load_u250(u250_path)
-        # Subset to matching times and latitudes by coordinate (not index)
+        # Align U250 to z500 grid by coordinate (handles different grids)
         target_times = z500_anom_raw.time.isel(time=event_time_list).values
         target_lats = lat_subset  # lat values in 25-90 range
+        target_lons = lon  # full lon array from z500 (may include cyclic point)
         u250_aligned = u250_full.sel(time=target_times, lat=target_lats,
-                                     method='nearest')
+                                     lon=target_lons, method='nearest')
         u250_event = u250_aligned.values
 
     # Extract minimal data (no 14GB loads!)
