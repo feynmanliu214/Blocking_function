@@ -58,6 +58,68 @@ def _ensure_xarray(data, coords=None):
         raise TypeError(f"Expected numpy array or xarray DataArray, got {type(data)}")
 
 
+# 250 hPa pressure level (Pa) — same convention as Z500_LEVEL in plasim_z500_loader
+U250_LEVEL = 25000.0
+# Variable names to try when loading zonal wind
+_UA_VAR_NAMES = ["ua", "u", "U250", "u250", "uwnd"]
+
+
+def _load_u250(u250_path):
+    """
+    Load 250 hPa zonal wind from a NetCDF file.
+
+    Parameters
+    ----------
+    u250_path : str or None
+        Path to NetCDF file containing zonal wind on pressure levels.
+        Must contain a variable named one of: ua, u, U250, u250, uwnd.
+
+    Returns
+    -------
+    xarray.DataArray
+        U250 data with dimensions (time, lat, lon).
+
+    Raises
+    ------
+    ValueError
+        If u250_path is None or the 250 hPa level is not found.
+    KeyError
+        If no recognized zonal wind variable is found.
+    """
+    if u250_path is None:
+        raise ValueError(
+            "u250_path must be provided when overlay_mode='dynamics'"
+        )
+
+    ds = xr.open_dataset(u250_path)
+
+    # Find the zonal wind variable
+    var_name = None
+    for name in _UA_VAR_NAMES:
+        if name in ds.data_vars:
+            var_name = name
+            break
+    if var_name is None:
+        ds.close()
+        raise KeyError(
+            f"No recognized zonal wind variable found in {u250_path}. "
+            f"Tried: {_UA_VAR_NAMES}. Available: {list(ds.data_vars)}"
+        )
+
+    ua = ds[var_name]
+
+    # Select 250 hPa level if pressure level dimension exists
+    plev_names = ["plev", "level", "lev", "pressure"]
+    for pname in plev_names:
+        if pname in ua.dims:
+            ua = ua.sel({pname: U250_LEVEL})
+            break
+
+    result = ua.compute()
+    ds.close()
+    return result
+
+
 def build_event_start_times_index(event_mask, event_ids, n_workers=None):
     """
     Generator that yields (event_id, start_time) tuples as events are found.
