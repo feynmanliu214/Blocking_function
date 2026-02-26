@@ -95,7 +95,17 @@ def _load_u250(u250_path):
             "u250_path must be provided when overlay_mode='dynamics'"
         )
 
-    ds = xr.open_dataset(u250_path)
+    import warnings
+    try:
+        ds = xr.open_dataset(
+            u250_path,
+            decode_times=xr.coders.CFDatetimeCoder(use_cftime=True)
+        )
+    except (TypeError, AttributeError):
+        # Fallback for older xarray versions
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ds = xr.open_dataset(u250_path, use_cftime=True)
 
     try:
         # Find the zonal wind variable
@@ -129,6 +139,14 @@ def _load_u250(u250_path):
                 f"from {u250_path}. Expected one of {plev_names}, "
                 f"but got dims: {ua.dims}"
             )
+
+        # Compute daily mean if data is sub-daily (e.g., 6-hourly PlaSim)
+        if len(ua.time) > 1:
+            t0 = ua.time.values[0]
+            t1 = ua.time.values[1]
+            dt_hours = (t1 - t0).total_seconds() / 3600
+            if dt_hours < 24:
+                ua = ua.resample(time="1D").mean()
 
         result = ua.compute()
     finally:
@@ -809,8 +827,12 @@ def create_event_animation_gif_fast(event_id, ano_stats, save_path=None,
     u250_event = None
     if overlay_mode == 'dynamics':
         u250_full = _load_u250(u250_path)
-        # Subset to matching times and latitudes
-        u250_event = u250_full.isel(time=event_time_list, lat=lat_indices).values
+        # Subset to matching times and latitudes by coordinate (not index)
+        target_times = z500_anom_raw.time.isel(time=event_time_list).values
+        target_lats = lat_subset  # lat values in 25-90 range
+        u250_aligned = u250_full.sel(time=target_times, lat=target_lats,
+                                     method='nearest')
+        u250_event = u250_aligned.values
 
     # Extract minimal data (no 14GB loads!)
     z500_event = z500_anom_raw.isel(time=event_time_list, lat=lat_indices).values
