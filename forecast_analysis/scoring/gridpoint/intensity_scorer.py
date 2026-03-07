@@ -129,7 +129,7 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
         region_lon_max: Optional[float] = None,
         region_lat_min: Optional[float] = None,
         region_lat_max: Optional[float] = None,
-        fallback_to_nonblocked: bool = False,
+        fallback_to_nonblocked: Union[bool, str] = False,
     ) -> float:
         """
         Compute maximum intensity score from pre-computed anomalies.
@@ -160,12 +160,19 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
                 f"duration_days={duration_days}, data length={len(z500_anom.time)}"
             )
 
-        above_threshold = apply_monthly_threshold(z500_anom, threshold_90)
+        fallback_to_nonblocked = self._normalize_fallback(fallback_to_nonblocked)
+
+        if fallback_to_nonblocked == "always":
+            above_threshold_np = None
+        else:
+            above_threshold = apply_monthly_threshold(z500_anom, threshold_90)
+            above_threshold_np = above_threshold.values
+
         region_mask = create_region_mask(z500_anom, lon_min, lon_max, lat_min, lat_max)
 
         return self._compute_window_max_intensity(
             z500_anom_np=z500_anom.values,
-            above_threshold_np=above_threshold.values,
+            above_threshold_np=above_threshold_np,
             region_mask_np=region_mask.values,
             start_idx=onset_time_idx,
             end_idx=window_end_idx,
@@ -183,7 +190,7 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
         region_lon_max: Optional[float] = None,
         region_lat_min: Optional[float] = None,
         region_lat_max: Optional[float] = None,
-        fallback_to_nonblocked: bool = False,
+        fallback_to_nonblocked: Union[bool, str] = False,
     ) -> float:
         """
         Compute maximum intensity score for a time window from raw Z500.
@@ -208,7 +215,14 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
         end_time = start_time + np.timedelta64(duration_days - 1, "D")
 
         z500_anom = compute_anomalies_from_climatology(z500, self.climatology)
-        above_threshold = apply_monthly_threshold(z500_anom, self.thresholds)
+
+        fallback_to_nonblocked = self._normalize_fallback(fallback_to_nonblocked)
+
+        if fallback_to_nonblocked == "always":
+            above_threshold_np = None
+        else:
+            above_threshold = apply_monthly_threshold(z500_anom, self.thresholds)
+            above_threshold_np = above_threshold.values
 
         time_vals = z500_anom.time.values
         start_idx = np.searchsorted(time_vals, start_time)
@@ -223,7 +237,7 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
 
         return self._compute_window_max_intensity(
             z500_anom_np=z500_anom.values,
-            above_threshold_np=above_threshold.values,
+            above_threshold_np=above_threshold_np,
             region_mask_np=region_mask.values,
             start_idx=start_idx,
             end_idx=end_idx,
@@ -248,7 +262,7 @@ def compute_gridpoint_intensity_score(
     climatology_path: Union[str, Path] = DEFAULT_CLIMATOLOGY_PATH,
     thresholds_path: Union[str, Path] = DEFAULT_THRESHOLDS_PATH,
     min_persistence: int = 5,
-    fallback_to_nonblocked: bool = False,
+    fallback_to_nonblocked: Union[bool, str] = False,
     region_lon_min: Optional[float] = None,
     region_lon_max: Optional[float] = None,
     region_lat_min: Optional[float] = None,
