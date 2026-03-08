@@ -72,6 +72,19 @@ SCORER_REGISTRY = {
 }
 
 
+def scorer_requires_blocking_detection(scorer_name: str) -> bool:
+    """Check whether a scorer needs upstream blocking mask/event detection.
+
+    Uses the ``requires_blocking_detection`` class attribute from the
+    scorer registry.  For legacy scorer names not in the registry
+    (e.g. ``IntegratedScorer``, ``DriftPenalizedScorer``), defaults to True.
+    """
+    scorer_cls = SCORER_REGISTRY.get(scorer_name)
+    if scorer_cls is None:
+        return True
+    return scorer_cls.requires_blocking_detection
+
+
 def get_scorer(name: str, **params):
     """
     Factory function to instantiate a scorer by name.
@@ -398,6 +411,7 @@ __all__ = [
     "rank_ensemble_scores",
     # Registry
     "SCORER_REGISTRY",
+    "scorer_requires_blocking_detection",
     "get_scorer",
     "compute_res_score",
     "list_available_scorers",
