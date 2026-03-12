@@ -1,7 +1,11 @@
 import subprocess
+import pathlib
 import pytest
 
-SCRIPT = "AI-RES/RES/create_ICs/blocking_1_ICs_0069_12_24.sh"
+# Anchor the script path relative to this test file so tests can be run
+# from any working directory.
+_REPO_ROOT = pathlib.Path(__file__).parent.parent.parent
+SCRIPT = str(_REPO_ROOT / "AI-RES/RES/create_ICs/blocking_1_ICs_0069_12_24.sh")
 
 def run_script(*args, check=False):
     """Run the IC script with given args, return CompletedProcess."""
