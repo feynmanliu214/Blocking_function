@@ -15,7 +15,7 @@ def test_capabilities_probe_returns_token():
     result = run_script("--capabilities")
     assert result.returncode == 0
     tokens = result.stdout.strip().splitlines()
-    assert "diverse_initial_conditions" in tokens
+    assert tokens == ["diverse_initial_conditions"]
 
 def test_capabilities_probe_no_extra_stdout():
     """--capabilities must produce no output beyond capability tokens."""
