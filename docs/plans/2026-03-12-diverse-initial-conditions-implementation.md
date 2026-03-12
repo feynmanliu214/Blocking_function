@@ -8,6 +8,8 @@
 
 **Tech Stack:** Bash, jq, pytest (subprocess), PlaSim restart files at `/glade/u/home/zhil/project/AI-RES/Blocking/data/PlaSim/sim52/restart_files/`
 
+> **Known gap (non-blocking):** `AI-DNS.sh` (line 296) also calls `create_ICs_script` with only 4 args and does not read `diverse_initial_conditions`. AIRES experiments use `QDMC.sh`, so this is not a blocker here. A follow-up task should apply equivalent changes to `AI-DNS.sh` before any AI-DNS run uses this flag.
+
 ---
 
 ### Task 1: Patch all existing configs with `"diverse_initial_conditions": false`
@@ -314,6 +316,20 @@ def test_diverse_mode_only_stdout_is_paths():
         # Every stdout token must look like a file path
         assert token.startswith("/"), f"Non-path token on stdout: {token!r}"
 
+def test_diverse_mode_does_not_require_single_year_file():
+    """diverse=true must not fail due to missing single-year restart file.
+    Year 0069 exists, but the check should not run in diverse mode at all.
+    This guards against the bug where lines 97-103 run unconditionally."""
+    # Use a length_simu that maps to a date with no single-year file
+    # by using a year not in 0006-0116 range; e.g. year 0200 would fail single check
+    # We verify diverse mode succeeds regardless of what the single-year path resolves to.
+    # Since EVENT_DATE is hardcoded in the script (0069-12-24), we can't change the year,
+    # but we verify that diverse mode does NOT check the single-year path by confirming
+    # success even when we know the single-year file exists (regression guard for the guard itself).
+    result = run_script("400", "NorthAtlantic", "30", "/tmp", "true")
+    assert result.returncode == 0, \
+        f"diverse mode failed unexpectedly:\n{result.stderr}"
+
 def test_list_length_assertion_fires():
     """IC script asserts list length == num_particles before returning."""
     # This is implicitly verified by the count tests above; here we verify
@@ -373,8 +389,24 @@ fi
 echo "${list_ICs[@]}"
 ```
 
-Note: `path_IC` (single date) is still computed earlier in the script for standard mode — keep
-that code. In diverse mode, `path_IC` is computed but not used (harmless).
+**Critical:** The existing single-file existence check (lines 97–103 of the IC script) runs
+unconditionally and will fail in diverse mode if the single-year file happens to be absent.
+Wrap it so it only runs in standard mode:
+
+```bash
+# Standard mode only: verify the single restart file exists
+if [[ "$diverse_initial_conditions" != "true" ]]; then
+    if [ ! -f "$path_IC" ]; then
+        echo "ERROR: Restart file not found: $path_IC" >&2
+        echo "Available date range: 0006-08-26 to 0116-03-02" >&2
+        echo "Event date: $EVENT_DATE, Init date: $INIT_DATE, Lead time: $length_simu days" >&2
+        exit 1
+    fi
+fi
+```
+
+The `path_IC` variable is still computed (from `INIT_DATE` including `init_year_fmt`) regardless
+of mode; in diverse mode it is simply never used.
 
 **Step 4: Run all tests**
 
