@@ -9,12 +9,15 @@ Instructions for running and configuring AI-RES experiments on Derecho.
 **Submit:**
 ```bash
 cd /glade/u/home/zhil/project/AI-RES/Blocking/AI-RES/RES
-qsub -v EXP_NAME=EXP15_AIRES experiments/submit_job_derecho_AIRES.pbs
+python3 experiments/submit_aires.py --exp-name EXP15_AIRES
 ```
+`submit_aires.py` chooses resources from `forecast_method` in the config:
+- `PFS` (and other non-Pangu methods): CPU script (`submit_job_derecho_AIRES.pbs`)
+- `Pangu-Plasim`: 4-node GPU script (`submit_job_derecho_AIRES_gpu.pbs`)
 
 **Monitor:** `qstat -u $USER`
 
-**Output:** `/glade/derecho/scratch/zhil/PLASIM/RES/experiments/<exp_basename>/<exp_name>/`
+**Output:** `/glade/derecho/scratch/zhil/PLASIM/RES/experiments/<experiment_name>_<scorer_name>_<region>/`
 
 **PlaSim netCDF outputs:**
 - Postprocessed PlaSim netCDF files (`plasim_out.step_<k>.particle_<i>.nc`) are written at every step (all resampling steps, not just the last).
@@ -38,7 +41,7 @@ Always specify a base config and parameters to change.
 Based on EXP15_AIRES, run an experiment with:
 - N_particles: 400
 - use_quantile: true
-- scorer: DriftPenalizedScorer with gamma=0, integration_days=7
+- scorer: DriftPenalizedScorer with variable=z500, gamma=0, integration_days=7
 ```
 
 ### Example 2: Target different blocking event
@@ -53,14 +56,22 @@ Based on EXP15_AIRES:
 - Target event: 0055-02-20
 - N_particles: 300
 - splitting_constant: 2.5
-- scorer: IntegratedScorer with n_days=7
+- scorer: IntegratedScorer with variable=z500, n_days=7
 - Region: France
+```
+
+### Example 4: Heatwave experiment
+```
+Based on EXP15_AIRES, run a heatwave experiment with:
+- scorer: HeatwaveMeanScorer with variable=tas, n_days=7
+- region: Chicago
 ```
 
 ### If parameters are unclear, ask:
 - Missing target date → "What blocking event date? Default is 0047-12-05"
 - Missing base config → "Which experiment config as base?"
 - Ambiguous scorer → "What gamma value for DriftPenalizedScorer?"
+- Missing variable → "What variable? z500 for blocking, tas for heatwave"
 
 ---
 
@@ -81,18 +92,20 @@ Edit the experiment JSON in:
 | `use_quantile` | Quantile mapping vs z-score | `true`, `false` |
 | `splitting_constant` | Selection strength (1.0-3.0) | `2.0` |
 | `region` | Target region | `"NorthAtlantic"`, `"France"`, `"PNW"`, `"Chicago"` |
-| `scorer` | Scoring method (see below) | `{"name": "IntegratedScorer", "params": {"n_days": 5}}` |
+| `scorer` | Scoring method (see below) | `{"name": "IntegratedScorer", "variable": "z500", "params": {"n_days": 5}}` |
+| `scorer.variable` | Climate variable the scorer operates on (required) | `"z500"` or `"tas"` |
 
 ### Change scorer
 
-```json
-"scorer": {"name": "IntegratedScorer", "params": {"n_days": 5}}
-"scorer": {"name": "DriftPenalizedScorer", "params": {"gamma": 5.0, "integration_days": 5}}
-"scorer": {"name": "DriftPenalizedScorer", "params": {"gamma": 5.0, "integration_days": null}}  // entire event
-"scorer": {"name": "GridpointIntensityScorer", "params": {"n_days": 5, "min_persistence": 5, "fallback_to_nonblocked": false}}
-```
+The `scorer` block is mandatory — omitting it is a hard error.
 
-If omitted, defaults to `IntegratedScorer` with `n_days=5`.
+```json
+"scorer": {"name": "IntegratedScorer", "variable": "z500", "params": {"n_days": 5}}
+"scorer": {"name": "DriftPenalizedScorer", "variable": "z500", "params": {"gamma": 5.0, "integration_days": 5}}
+"scorer": {"name": "DriftPenalizedScorer", "variable": "z500", "params": {"gamma": 5.0, "integration_days": null}}  // entire event
+"scorer": {"name": "GridpointIntensityScorer", "variable": "z500", "params": {"n_days": 5, "min_persistence": 5, "fallback_to_nonblocked": false}}
+"scorer": {"name": "HeatwaveMeanScorer", "variable": "tas", "params": {"n_days": 7}}
+```
 
 **DriftPenalizedScorer parameters:**
 - `gamma`: Drift penalty constant (default: 5.0)
@@ -134,7 +147,7 @@ ls /glade/u/home/zhil/project/AI-RES/Blocking/data/PlaSim/sim52/restart_files/MO
 3. **Submit:**
    ```bash
    cd /glade/u/home/zhil/project/AI-RES/Blocking/AI-RES/RES
-   qsub -v EXP_NAME=<your_exp_name> experiments/submit_job_derecho_AIRES.pbs
+   python3 experiments/submit_aires.py --exp-name <your_exp_name>
    ```
 
 The script auto-increments if experiment name exists.
@@ -144,14 +157,14 @@ The script auto-increments if experiment name exists.
 Duplicate submissions usually happen when automation treats a transient PBS state as a failed submit:
 - `qsub` succeeds and returns a job id, but an immediate `qstat -f <job_id>` can briefly return "Unknown Job Id".
 - Agents then submit again, creating another `exp_AIRES` job.
-- `submit_job_derecho_AIRES.pbs` auto-increments experiment index, so duplicates become separate experiment folders.
+- The selected submit script (`submit_job_derecho_AIRES.pbs` for CPU or `submit_job_derecho_AIRES_gpu.pbs` for GPU) auto-increments experiment index, so duplicates become separate experiment folders.
 
 Use this idempotent workflow:
 
 1. Submit once and capture `JOB_ID`:
    ```bash
    cd /glade/u/home/zhil/project/AI-RES/Blocking/AI-RES/RES
-   JOB_ID=$(qsub -v EXP_NAME=<your_exp_name> experiments/submit_job_derecho_AIRES.pbs)
+   JOB_ID=$(python3 experiments/submit_aires.py --exp-name <your_exp_name>)
    echo "$JOB_ID"
    ```
 2. Do **not** resubmit if `qstat -f "$JOB_ID"` fails immediately. Poll for up to 2 minutes:
