@@ -174,12 +174,23 @@ def score_single_member(
         )
 
     # ---- Anomaly path ------------------------------------------------------
+    if z500_clim is None:
+        raise ValueError(
+            f"Scorer '{scorer_name}' requires z500_clim for anomaly computation, "
+            "but z500_clim=None was provided."
+        )
+
     from forecast_analysis.data_loading import compute_anomalies_with_climatology
 
     z500_anom = compute_anomalies_with_climatology(field_daily, z500_clim)
 
     # Blocking detection (if required by scorer)
     if scorer_requires_blocking_detection(scorer_name):
+        if threshold_90 is None:
+            raise ValueError(
+                f"Scorer '{scorer_name}' requires threshold_90 for blocking detection, "
+                "but threshold_90=None was provided."
+            )
         from ANO_PlaSim import create_blocking_mask_fast, identify_blocking_events
 
         blocked_mask = create_blocking_mask_fast(z500_anom, threshold_90)
@@ -229,14 +240,16 @@ def _extract_z500(ds: xr.Dataset) -> xr.DataArray:
 def _extract_tas(ds: xr.Dataset) -> xr.DataArray:
     """Extract near-surface air temperature from a dataset."""
     if "tas" in ds:
-        return ds["tas"]
+        result = ds["tas"]
     elif "t2m" in ds:
-        return ds["t2m"]
+        result = ds["t2m"]
     else:
         raise KeyError(
             "Neither 'tas' nor 't2m' found in dataset. "
             f"Available variables: {list(ds.data_vars)}"
         )
+    result.name = "tas"
+    return result
 
 
 __all__ = [

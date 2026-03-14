@@ -3,13 +3,16 @@
 Covers:
 - extract_variable() for z500 and tas
 - extract_variable() with unknown variable
+- prepare_daily_field() resampling, NH filtering, and standardize_coordinates
 - score_single_member() end-to-end for both blocking and heatwave paths
 - score_single_member() with mismatched variable raises ValueError
+- score_single_member() null guards for z500_clim and threshold_90
 """
 
 from unittest import mock
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -110,12 +113,15 @@ class TestExtractVariableTas:
         result = extract_variable(ds, "tas")
 
         assert isinstance(result, xr.DataArray)
+        assert result.name == "tas"
 
     def test_extracts_t2m_variant(self):
+        """When source variable is 't2m', result.name is normalized to 'tas'."""
         ds = _make_tas_dataset(var_name="t2m")
         result = extract_variable(ds, "tas")
 
         assert isinstance(result, xr.DataArray)
+        assert result.name == "tas"
 
     def test_missing_tas_variable_raises(self):
         ds = xr.Dataset({"wind_speed": xr.DataArray([1, 2, 3])})
@@ -133,6 +139,105 @@ class TestExtractVariableUnknown:
         ds = _make_tas_dataset()
         with pytest.raises(ValueError, match="'wind_speed'"):
             extract_variable(ds, "wind_speed")
+
+
+# ===========================================================================
+# prepare_daily_field tests
+# ===========================================================================
+
+
+def _make_subdaily_field(n_days=5, steps_per_day=4, include_sh=True):
+    """Build a sub-daily DataArray spanning both hemispheres.
+
+    Parameters
+    ----------
+    n_days : int
+        Number of days.
+    steps_per_day : int
+        Sub-daily time steps per day.
+    include_sh : bool
+        If True, latitude range spans from -90 to 90 (both hemispheres).
+        If False, only Northern Hemisphere latitudes (0 to 90).
+    """
+    n_time = n_days * steps_per_day
+    lat_vals = np.linspace(-90, 90, 37) if include_sh else np.linspace(0, 90, 19)
+    lon_vals = np.linspace(0, 350, 36)
+    times = pd.date_range("2000-01-01", periods=n_time, freq="6h")
+
+    rng = np.random.RandomState(99)
+    data = rng.randn(n_time, len(lat_vals), len(lon_vals)) * 50 + 5500
+
+    return xr.DataArray(
+        data,
+        dims=["time", "lat", "lon"],
+        coords={"time": times, "lat": lat_vals, "lon": lon_vals},
+        name="z500",
+    )
+
+
+class TestPrepareDailyField:
+    """Tests for prepare_daily_field()."""
+
+    @staticmethod
+    def _mock_process():
+        """Return a context manager that mocks Process.standardize_coordinates.
+
+        The function under test does ``from Process import standardize_coordinates``
+        at call time.  We inject a fake ``Process`` module into sys.modules so the
+        import resolves without needing the real module.
+
+        Returns a (context_manager, mock_fn) tuple so callers can inspect the mock.
+        """
+        mock_std = mock.MagicMock(side_effect=lambda x: x)
+        process_mod = mock.MagicMock()
+        process_mod.standardize_coordinates = mock_std
+        return mock.patch.dict("sys.modules", {"Process": process_mod}), mock_std
+
+    def test_subdaily_resampled_to_daily(self):
+        """Sub-daily data resampled to daily produces expected number of time steps."""
+        n_days = 5
+        field = _make_subdaily_field(n_days=n_days, steps_per_day=4)
+
+        ctx, _ = self._mock_process()
+        with ctx:
+            result = prepare_daily_field(field, filter_nh=False)
+
+        assert result.sizes["time"] == n_days
+
+    def test_filter_nh_true_removes_southern_hemisphere(self):
+        """filter_nh=True removes Southern Hemisphere latitudes."""
+        field = _make_subdaily_field(include_sh=True)
+
+        ctx, _ = self._mock_process()
+        with ctx:
+            result = prepare_daily_field(field, filter_nh=True)
+
+        # All remaining latitudes should be >= 0
+        assert (result.lat.values >= 0).all()
+        # We should have fewer latitudes than the input (which includes SH)
+        assert result.sizes["lat"] < field.sizes["lat"]
+
+    def test_filter_nh_false_preserves_all_latitudes(self):
+        """filter_nh=False preserves all latitudes including Southern Hemisphere."""
+        field = _make_subdaily_field(include_sh=True)
+
+        ctx, _ = self._mock_process()
+        with ctx:
+            result = prepare_daily_field(field, filter_nh=False)
+
+        # All original latitudes should be preserved
+        assert result.sizes["lat"] == field.sizes["lat"]
+        np.testing.assert_array_equal(result.lat.values, field.lat.values)
+
+    def test_calls_standardize_coordinates(self):
+        """prepare_daily_field calls standardize_coordinates (verified via mock)."""
+        field = _make_subdaily_field(n_days=3, steps_per_day=4)
+
+        ctx, mock_std = self._mock_process()
+        with ctx:
+            prepare_daily_field(field, filter_nh=False)
+
+        mock_std.assert_called_once()
 
 
 # ===========================================================================
@@ -334,3 +439,67 @@ class TestScoreSingleMemberVariableMismatch:
                 region_bounds=REGION,
                 onset_time_idx=0,
             )
+
+
+# ===========================================================================
+# Null guard tests (I-4)
+# ===========================================================================
+
+
+class TestScoreSingleMemberNullGuards:
+    """score_single_member raises ValueError when required inputs are None."""
+
+    def test_z500_clim_none_raises(self):
+        """Anomaly-path scorer with z500_clim=None raises ValueError."""
+        field_daily = xr.DataArray(
+            np.ones((5, 3, 3)),
+            dims=["time", "lat", "lon"],
+        )
+        with pytest.raises(ValueError, match="requires z500_clim"):
+            score_single_member(
+                field_daily=field_daily,
+                scorer_name="GridpointPersistenceScorer",
+                scorer_params={"min_persistence": 5},
+                variable="z500",
+                region_bounds=REGION,
+                onset_time_idx=0,
+                z500_clim=None,
+                threshold_90={1: 100.0},
+            )
+
+    def test_threshold_90_none_raises_when_blocking_detection_required(self):
+        """Blocking-detection scorer with threshold_90=None raises ValueError."""
+        n_time, n_lat, n_lon = 10, 5, 8
+        field_daily = xr.DataArray(
+            np.ones((n_time, n_lat, n_lon)) * 5500,
+            dims=["time", "lat", "lon"],
+            coords={
+                "time": np.arange(n_time),
+                "lat": np.linspace(30, 80, n_lat),
+                "lon": np.linspace(0, 350, n_lon),
+            },
+            name="z500",
+        )
+        fake_anom = field_daily.copy()
+
+        with (
+            mock.patch(
+                "forecast_analysis.data_loading.compute_anomalies_with_climatology",
+                return_value=fake_anom,
+            ),
+            mock.patch(
+                "forecast_analysis.scoring.scorer_requires_blocking_detection",
+                return_value=True,
+            ),
+        ):
+            with pytest.raises(ValueError, match="requires threshold_90"):
+                score_single_member(
+                    field_daily=field_daily,
+                    scorer_name="ANOScorer",
+                    scorer_params={"mode": "onset", "n_days": 5},
+                    variable="z500",
+                    region_bounds=REGION,
+                    onset_time_idx=2,
+                    z500_clim=xr.DataArray([0]),  # non-None so we pass the first guard
+                    threshold_90=None,
+                )
