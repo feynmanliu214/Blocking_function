@@ -45,11 +45,25 @@ class BlockingScorer(ABC):
         anomalies and can skip the computationally expensive blocking detection.
         Scorers like RMSEScorer that compare against truth at fixed locations
         set this to False.
+    requires_anomaly : bool
+        If True (default), the scorer operates on anomaly fields (e.g. Z500
+        anomalies). If False, the scorer works on raw variable fields (e.g.
+        raw surface temperature) and uses ``compute_score_from_field()``
+        instead of the event-based ``compute_event_scores()`` pathway.
+    required_variable : str
+        The climate variable this scorer expects (e.g. ``"z500"``, ``"tas"``).
+        Default ``"z500"`` for backward compatibility with blocking scorers.
+    allowed_regions : tuple or None
+        Tuple of region name strings that this scorer is valid for.
+        ``None`` means the scorer can be used with any region.
     """
 
     name: str = "BaseScorer"
     description: str = "Abstract base scorer"
     requires_blocking_detection: bool = True
+    requires_anomaly: bool = True
+    required_variable: str = "z500"
+    allowed_regions: tuple = None
 
     @abstractmethod
     def compute_event_scores(

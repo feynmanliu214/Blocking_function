@@ -138,6 +138,7 @@ class RMSEScorer(BlockingScorer):
     name = "RMSEScorer"
     description = "RMSE between emulator and truth Z500 anomalies at onset centroid"
     requires_blocking_detection = False
+    allowed_regions = ("NorthAtlantic",)
 
     def __init__(
         self,

@@ -85,6 +85,7 @@ class ANOScorer(BlockingScorer):
     name = "ANOScorer"
     description = "Unified ANO-based scorer with configurable event detection and drift penalty"
     requires_blocking_detection = True
+    allowed_regions = ("NorthAtlantic",)
 
     def __init__(
         self,

@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """
-Scoring Subpackage for Blocking Event Analysis.
+Scoring Subpackage for Blocking and Heatwave Event Analysis.
 
-This package provides two categories of scoring methods:
+This package provides three categories of scoring methods:
 
-1. Grid-point-based scoring:
+1. Grid-point-based scoring (blocking / z500):
    - GridpointPersistenceScorer: DG-style per-gridpoint blocking with 5-day persistence
    - GridpointIntensityScorer: strict-window maximum anomaly intensity
 
-2. ANO-based event scoring:
+2. ANO-based event scoring (blocking / z500):
    - ANOScorer: Unified scorer with configurable event detection and drift penalty
    - RMSEScorer: RMSE between emulator and truth Z500 anomalies at onset centroid
 
+3. Heatwave scoring (tas):
+   - HeatwaveMeanScorer: Spatiotemporal mean of T_2m over L-day regional box
+
 Usage:
     from forecast_analysis.scoring import ANOScorer, GridpointPersistenceScorer, GridpointIntensityScorer
+    from forecast_analysis.scoring import HeatwaveMeanScorer
 
     # ANO-based: auto event detection with drift penalty
     scorer = ANOScorer(mode="auto", use_drift_penalty=True, gamma=5.0)
@@ -23,6 +27,9 @@ Usage:
 
     # Grid-point-based
     scorer = GridpointPersistenceScorer()
+
+    # Heatwave mean scorer
+    scorer = HeatwaveMeanScorer(n_days=7)
 
 Author: AI-RES Project
 """
@@ -55,6 +62,9 @@ from .ano import (
     extract_3x3_patch,
 )
 
+# Heatwave scorers
+from .heatwave import HeatwaveMeanScorer
+
 from .aggregation import (
     compute_member_scores,
     rank_ensemble_scores,
@@ -69,6 +79,7 @@ SCORER_REGISTRY = {
     'ANOScorer': ANOScorer,
     'GridpointPersistenceScorer': GridpointPersistenceScorer,
     'GridpointIntensityScorer': GridpointIntensityScorer,
+    'HeatwaveMeanScorer': HeatwaveMeanScorer,
 }
 
 
@@ -83,6 +94,85 @@ def scorer_requires_blocking_detection(scorer_name: str) -> bool:
     if scorer_cls is None:
         return True
     return scorer_cls.requires_blocking_detection
+
+
+# ---------------------------------------------------------------------------
+# Legacy scorer name mappings
+# ---------------------------------------------------------------------------
+
+_KNOWN_LEGACY_NAMES = {"IntegratedScorer", "DriftPenalizedScorer", "RMSEScorer"}
+
+_LEGACY_REQUIRED_VARIABLE = {
+    "IntegratedScorer": "z500",
+    "DriftPenalizedScorer": "z500",
+    "RMSEScorer": "z500",
+}
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+def validate_scorer_name(scorer_name: str) -> None:
+    """Raise ``ValueError`` if *scorer_name* is not a known scorer.
+
+    Accepts both registry names and legacy aliases.
+    """
+    if scorer_name in SCORER_REGISTRY:
+        return
+    if scorer_name in _KNOWN_LEGACY_NAMES:
+        return
+    available = sorted(set(list(SCORER_REGISTRY.keys()) + list(_KNOWN_LEGACY_NAMES)))
+    raise ValueError(
+        f"Unknown scorer: '{scorer_name}'. Known scorers: {available}"
+    )
+
+
+def scorer_requires_anomaly(scorer_name: str) -> bool:
+    """Return whether *scorer_name* operates on anomaly fields.
+
+    Legacy names are assumed to require anomalies (z500-based).
+    """
+    scorer_cls = SCORER_REGISTRY.get(scorer_name)
+    if scorer_cls is None:
+        # Legacy names all require anomalies
+        return True
+    return getattr(scorer_cls, 'requires_anomaly', True)
+
+
+def scorer_required_variable(scorer_name: str) -> str:
+    """Return the required climate variable for *scorer_name*.
+
+    Returns ``"z500"`` for legacy names.
+    """
+    scorer_cls = SCORER_REGISTRY.get(scorer_name)
+    if scorer_cls is not None:
+        return getattr(scorer_cls, 'required_variable', 'z500')
+    return _LEGACY_REQUIRED_VARIABLE.get(scorer_name, 'z500')
+
+
+def validate_scorer_region(scorer_name: str, region: str) -> None:
+    """Raise ``ValueError`` if *region* is not allowed for *scorer_name*."""
+    scorer_cls = SCORER_REGISTRY.get(scorer_name)
+    if scorer_cls is None:
+        # Legacy names — no restriction (caller is responsible)
+        return
+    allowed = getattr(scorer_cls, 'allowed_regions', None)
+    if allowed is not None and region not in allowed:
+        raise ValueError(
+            f"Region '{region}' is not allowed for {scorer_name}. "
+            f"Allowed regions: {list(allowed)}"
+        )
+
+
+def validate_scorer_variable(scorer_name: str, variable: str) -> None:
+    """Raise ``ValueError`` if *variable* does not match *scorer_name*."""
+    required = scorer_required_variable(scorer_name)
+    if variable != required:
+        raise ValueError(
+            f"Variable '{variable}' does not match {scorer_name} "
+            f"(requires '{required}')"
+        )
 
 
 def get_scorer(name: str, **params):
@@ -120,11 +210,12 @@ def get_scorer(name: str, **params):
 def compute_res_score(
     scorer_name: str,
     scorer_params: dict,
-    z500_anom,
-    event_info: dict,
-    region_bounds: dict,
+    z500_anom=None,
+    event_info: dict = None,
+    region_bounds: dict = None,
     onset_time_idx: int = None,
     threshold_90: dict = None,
+    field_data=None,
 ) -> float:
     """
     Unified function to compute a scalar score for RES experiments.
@@ -136,16 +227,17 @@ def compute_res_score(
     ----------
     scorer_name : str
         Name of the scorer ('ANOScorer', 'GridpointPersistenceScorer',
-        or 'GridpointIntensityScorer').
+        'GridpointIntensityScorer', or 'HeatwaveMeanScorer').
         For backward compatibility, 'IntegratedScorer' and 'DriftPenalizedScorer'
         are mapped to ANOScorer with appropriate settings.
     scorer_params : dict
         Parameters for the scorer constructor.
-    z500_anom : xr.DataArray
+    z500_anom : xr.DataArray, optional
         Z500 anomaly data with dimensions (time, lat, lon).
-    event_info : dict
+        Required for anomaly-based scorers.
+    event_info : dict, optional
         Event information dict containing 'event_mask' and/or 'blocked_mask'.
-        Not used by GridpointPersistenceScorer.
+        Not used by GridpointPersistenceScorer or HeatwaveMeanScorer.
     region_bounds : dict
         Region bounds with keys 'lon_min', 'lon_max', 'lat_min', 'lat_max'.
     onset_time_idx : int, optional
@@ -154,6 +246,9 @@ def compute_res_score(
     threshold_90 : dict, optional
         Monthly thresholds mapping month (int) -> threshold (float).
         Required for gridpoint scorers.
+    field_data : xr.DataArray, optional
+        Raw field data (e.g. tas) with dimensions (time, lat, lon).
+        Required for non-anomaly scorers like HeatwaveMeanScorer.
 
     Returns
     -------
@@ -162,6 +257,7 @@ def compute_res_score(
         For ANOScorer auto mode this is the max P_total across events.
         For GridpointPersistenceScorer this is mean blocked percentage (0-100).
         For GridpointIntensityScorer this is max moving-average intensity.
+        For HeatwaveMeanScorer this is mean temperature in Kelvin.
 
     Example
     -------
@@ -176,6 +272,20 @@ def compute_res_score(
     """
     import numpy as np
     import xarray as xr
+
+    # --- Non-anomaly dispatch: scorers that work on raw field data ----------
+    scorer_cls = SCORER_REGISTRY.get(scorer_name)
+    if scorer_cls is not None and not getattr(scorer_cls, 'requires_anomaly', True):
+        if field_data is None:
+            raise ValueError(f"{scorer_name} requires field_data")
+        scorer = scorer_cls(**scorer_params)
+        return scorer.compute_score_from_field(
+            field_data=field_data,
+            onset_time_idx=onset_time_idx,
+            region_bounds=region_bounds,
+        )
+
+    # --- Anomaly-based scorers below ---------------------------------------
 
     lon_min = region_bounds['lon_min']
     lon_max = region_bounds['lon_max']
@@ -374,8 +484,8 @@ def compute_res_score(
     else:
         raise ValueError(f"Scorer '{scorer_name}' not supported for RES. "
                          f"Available: ['ANOScorer', 'GridpointPersistenceScorer', "
-                         f"'GridpointIntensityScorer', 'IntegratedScorer', "
-                         f"'DriftPenalizedScorer']")
+                         f"'GridpointIntensityScorer', 'HeatwaveMeanScorer', "
+                         f"'IntegratedScorer', 'DriftPenalizedScorer']")
 
 
 def list_available_scorers():
@@ -397,6 +507,8 @@ __all__ = [
     "compute_blocking_scores",
     "compute_integrated_score",
     "compute_rmse_score",
+    # Heatwave
+    "HeatwaveMeanScorer",
     # Utilities
     "REGION_BOUNDS",
     "compute_blocking_centroid",
@@ -415,4 +527,10 @@ __all__ = [
     "get_scorer",
     "compute_res_score",
     "list_available_scorers",
+    # Validation helpers
+    "validate_scorer_name",
+    "scorer_requires_anomaly",
+    "scorer_required_variable",
+    "validate_scorer_region",
+    "validate_scorer_variable",
 ]

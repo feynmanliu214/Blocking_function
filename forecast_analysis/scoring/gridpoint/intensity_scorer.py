@@ -36,6 +36,7 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
     name = "GridpointIntensityScorer"
     description = "Strict per-window threshold exceedance with moving-average max intensity"
     requires_blocking_detection = False
+    allowed_regions = ("NorthAtlantic",)
 
     _VALID_FALLBACK_VALUES = {False, True, "always"}
 
@@ -88,7 +89,7 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
 
         always_mode = fallback_to_nonblocked == "always"
         max_start_idx = end_idx - window_days
-        max_intensity = 0.0
+        max_intensity = -np.inf
 
         for t in range(start_idx, max_start_idx + 1):
             t_end = t + window_days
