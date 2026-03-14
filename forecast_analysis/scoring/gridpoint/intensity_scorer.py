@@ -89,7 +89,7 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
 
         always_mode = fallback_to_nonblocked == "always"
         max_start_idx = end_idx - window_days
-        max_intensity = -np.inf
+        max_intensity = 0.0
 
         for t in range(start_idx, max_start_idx + 1):
             t_end = t + window_days

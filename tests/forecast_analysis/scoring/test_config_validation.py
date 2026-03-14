@@ -133,6 +133,10 @@ class TestValidateScorerVariable:
         with pytest.raises(ValueError, match="does not match"):
             validate_scorer_variable("IntegratedScorer", "tas")
 
+    def test_unknown_scorer_raises(self):
+        with pytest.raises(ValueError, match="Unknown scorer"):
+            validate_scorer_variable("UnknownScorer", "z500")
+
 
 # ---------------------------------------------------------------------------
 # Consistency: class attributes match helper output

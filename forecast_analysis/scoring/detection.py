@@ -69,43 +69,38 @@ def _parse_bool(value: Any) -> bool:
 def enforce_plasim_score_policy(
     scorer_name: str, scorer_params: Dict[str, Any]
 ) -> Tuple[Dict[str, Any], Optional[str]]:
-    """Normalize PlaSim scorer params for return-curve plotting.
+    """Enforce policy for PlaSim truth scores used by return-curve plots.
 
-    For GridpointIntensityScorer, respect the configured
-    fallback_to_nonblocked value from experiment config (auto behavior).
+    Resampling may use fallback_to_nonblocked=True or "always", but PlaSim
+    truth scores used for return-curve plotting should always use
+    fallback_to_nonblocked=False.
     """
     params = dict(scorer_params or {})
     if scorer_name != "GridpointIntensityScorer":
         return params, None
 
     configured = params.get("fallback_to_nonblocked", None)
+    params["fallback_to_nonblocked"] = False
+
     if configured is None:
-        params["fallback_to_nonblocked"] = False
         note = (
-            "PlaSim score policy: fallback_to_nonblocked is not set; "
-            "defaulting to False for GridpointIntensityScorer."
+            "PlaSim score policy: using fallback_to_nonblocked=False for "
+            "GridpointIntensityScorer."
         )
-    elif isinstance(configured, str):
-        value = configured.strip().lower()
-        if value == "always":
-            params["fallback_to_nonblocked"] = "always"
-            note = (
-                "PlaSim score policy: using configured "
-                "fallback_to_nonblocked='always' for GridpointIntensityScorer."
-            )
-        else:
-            parsed_bool = _parse_bool(value)
-            params["fallback_to_nonblocked"] = parsed_bool
-            note = (
-                "PlaSim score policy: using configured "
-                f"fallback_to_nonblocked={parsed_bool} for GridpointIntensityScorer."
-            )
-    else:
-        parsed_bool = _parse_bool(configured)
-        params["fallback_to_nonblocked"] = parsed_bool
+    elif isinstance(configured, str) and configured.strip().lower() == "always":
         note = (
-            "PlaSim score policy: using configured "
-            f"fallback_to_nonblocked={parsed_bool} for GridpointIntensityScorer."
+            "PlaSim score policy override: config requested "
+            "fallback_to_nonblocked='always', forcing False for PlaSim truth scoring."
+        )
+    elif _parse_bool(configured):
+        note = (
+            "PlaSim score policy override: config requested "
+            "fallback_to_nonblocked=True, forcing False for PlaSim truth scoring."
+        )
+    else:
+        note = (
+            "PlaSim score policy: fallback_to_nonblocked already false for "
+            "GridpointIntensityScorer."
         )
 
     return params, note

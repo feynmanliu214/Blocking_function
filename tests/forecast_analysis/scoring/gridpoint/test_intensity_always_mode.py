@@ -34,6 +34,19 @@ class TestComputeWindowMaxIntensityAlways:
         assert result_false == 0.0
         assert result_always == 42.0
 
+    def test_always_negative_anomalies_clamped_to_zero(self):
+        """All-negative regional anomalies should return 0.0 (floor)."""
+        z500_anom = np.full((5, 3, 3), -4.0)
+        region_mask = np.ones((3, 3), dtype=bool)
+
+        result_always = GridpointIntensityScorer._compute_window_max_intensity(
+            z500_anom, None, region_mask,
+            start_idx=0, end_idx=5, window_days=5,
+            fallback_to_nonblocked="always",
+        )
+
+        assert result_always == 0.0
+
     def test_always_ignores_above_threshold_even_when_some_blocked(self):
         """With 'always', blocked points are irrelevant — uses full region."""
         z500_anom, above_threshold, region_mask = self._make_data(fill=10.0)

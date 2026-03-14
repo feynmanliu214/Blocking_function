@@ -167,6 +167,7 @@ def validate_scorer_region(scorer_name: str, region: str) -> None:
 
 def validate_scorer_variable(scorer_name: str, variable: str) -> None:
     """Raise ``ValueError`` if *variable* does not match *scorer_name*."""
+    validate_scorer_name(scorer_name)  # fail-fast on unknown names
     required = scorer_required_variable(scorer_name)
     if variable != required:
         raise ValueError(
