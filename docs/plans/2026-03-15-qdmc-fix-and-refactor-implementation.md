@@ -77,6 +77,8 @@ function validate_retry_params() {
     # Validate and sanitize retry-related environment variables.
     # Usage: validate_retry_params <varname> <value> <default> <pattern>
     #   pattern: "positive" (^[1-9][0-9]*$) or "nonneg" (^[0-9]+$)
+    # Returns: sanitized value on stdout (safe for command substitution).
+    #          Warnings go to stderr so they don't pollute the captured value.
     local varname=$1 value=$2 default=$3 pattern_type=${4:-nonneg}
     local regex
     if [ "$pattern_type" = "positive" ]; then
@@ -85,7 +87,7 @@ function validate_retry_params() {
         regex='^[0-9]+$'
     fi
     if ! [[ "$value" =~ $regex ]]; then
-        echo "WARNING: Invalid $varname=$value; using $default"
+        echo "WARNING: Invalid $varname=$value; using $default" >&2
         echo "$default"
         return 0
     fi
@@ -1339,12 +1341,16 @@ The new QDMC.sh structure:
 1. Header / shebang (same)
 2. `CONFIG_FILE=$1`
 3. `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"`
-4. `source "$SCRIPT_DIR/lib/cluster_setup.sh"`
-5. Config parsing (lines 142-367 minus redundant echo, minus function defs)
-6. `source "$SCRIPT_DIR/lib/lib_utils.sh"`
-7. `source "$SCRIPT_DIR/lib/lib_plasim.sh"`
-8. `source "$SCRIPT_DIR/lib/lib_forecast.sh"`
+4. `source "$SCRIPT_DIR/lib/cluster_setup.sh"` — sets job_manager, nodes, num_parallel, etc.
+5. `source "$SCRIPT_DIR/lib/lib_utils.sh"` — must precede config parsing (used by lib_plasim)
+6. `source "$SCRIPT_DIR/lib/lib_plasim.sh"` — must precede config parsing because `create_pumaburner_namelist()` is called at line 206 during Pangu-Plasim config setup
+7. `source "$SCRIPT_DIR/lib/lib_forecast.sh"`
+8. Config parsing (lines 142-367 minus redundant echo, minus function defs)
 9. Main loop (lines 1455-1578 with `debug_mode` fake-run branches removed)
+
+**Critical ordering note:** `lib_plasim.sh` MUST be sourced before config parsing
+because the Pangu-Plasim config branch calls `create_pumaburner_namelist()` (original
+line 206). Sourcing it after config parsing would cause `command not found`.
 
 **Step 2: Verify syntax**
 
@@ -1424,23 +1430,30 @@ After job completes, check:
 
 ```bash
 # 1. Run reaches step 4 Pangu forecasting
-grep "Running Pangu-Plasim forecasts" <exp_dir>/outerr_forecasts.log
+# Note: "Running Pangu-Plasim forecasts" is printed to PBS stdout (the .OU file),
+# not outerr_forecasts.log. Check the PBS log or the per-node logs for evidence.
+grep "Running Pangu-Plasim forecasts" <logs_dir>/<jobid>.OU
 
-# 2. No Traceback or ERROR in logs
-grep -i "traceback\|^ERROR" <exp_dir>/*.log
+# 2. No Traceback or ERROR in logs (check both PBS stdout and per-node logs)
+grep -i "traceback\|^ERROR" <logs_dir>/<jobid>.OU <exp_dir>/outerr_forecasts*.log
 
-# 3. World size from Cuda: 4 on all nodes
+# 3. World size from Cuda: 4 on all nodes (the key GPU-discovery check)
 grep "World size from Cuda" <exp_dir>/outerr_forecasts_node_*_step_4.log
+# Expected: "World size from Cuda: 4" on every node
 
-# 4. Each node reports local GPU UUIDs (should differ across nodes)
-grep "CUDA_VISIBLE_DEVICES" <exp_dir>/outerr_forecasts_node_*_step_4.log
+# 4. Each node discovers its own local GPUs via nvidia-smi -L
+# After the fix, CUDA_VISIBLE_DEVICES should be <unset> on every node.
+# The real signal is that nvidia-smi -L output shows different GPU UUIDs per node.
+grep "GPU 0:" <exp_dir>/outerr_forecasts_node_*_step_4.log
+# Verify the GPU UUIDs differ between node_0, node_1, node_2, node_3
 
 # 5. Forecast score files exist
 ls <exp_dir>/step_4/particle_*/forecast/PanguPlasimFS_s4_p*_A_France.npy | wc -l
 # Expected: 40 (N_particles)
 
 # 6. validate_panguplasim_forecast_scores passed
-grep "Validated Pangu-Plasim score files" <exp_dir>/outerr_forecasts.log
+# This message goes to PBS stdout, not outerr_forecasts.log
+grep "Validated Pangu-Plasim score files" <logs_dir>/<jobid>.OU
 ```
 
 **Step 4: Commit verification results**
