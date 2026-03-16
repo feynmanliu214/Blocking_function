@@ -1,26 +1,13 @@
 # Plot Return Curve for AI-RES Output
 
-Compact runbook for generating return-period curves with scorer-aware labels/titles.
+Compact runbook for generating return-period curves from any AI-RES experiment.
+The unified script auto-detects the scorer type and dispatches to the correct plotter.
 
 Script:
-`/glade/u/home/zhil/project/AI-RES/Blocking/script/plot_return_curve_blocking_area_pct.py`
+`/glade/u/home/zhil/project/AI-RES/Blocking/script/plot_return_curve.py`
 
-Use this file for the fast path. Detailed CLI/reference/troubleshooting content lives in:
+Detailed CLI/reference/troubleshooting content lives in:
 - `plot_return_curve_reference.md`
-
-## Defaults That Matter
-
-- Default score source is `plasim`:
-  - first tries `resampling/plasim_scores_step_K.npy`
-  - falls back to recomputing from final-step PlaSim `.nc` outputs
-- `plasim_forecast` mode is available when `.nc` outputs were cleaned and per-particle forecast score arrays were saved.
-- DNS ground-truth overlay is enabled by default (only for `GridpointIntensityScorer`).
-- Default DNS overlay window is `12-24_to_12-30`.
-  - Defaults to `return_curve_block_maxima_always_12-24_to_12-30_retry2.npz` (full)
-    and `return_curve_block_maxima_always_12-24_to_12-30_retry2_subset400.npz`
-    (subset); falls back to legacy `return_curve_block_maxima_always_12-24_to_12-30*.npz`
-    files if retry2 files are missing.
-  - Use `--dns-ground-truth-window djf` for full-DJF DNS curves.
 
 ## Quick Start
 
@@ -31,161 +18,127 @@ source /glade/u/apps/opt/miniforge/25.11/etc/profile.d/conda.sh
 conda activate /glade/work/zhil/conda_envs/aires
 ```
 
-Run the plot script:
+Plot the latest experiment (scorer auto-detected):
 
 ```bash
-# Default (PlaSim score-based y-axis)
-python script/plot_return_curve_blocking_area_pct.py
-
-# Specify experiment
-python script/plot_return_curve_blocking_area_pct.py --exp_path /path/to/experiment
-
-# Use saved forecast score arrays (when final .nc output is unavailable)
-python script/plot_return_curve_blocking_area_pct.py \
-  --exp_path /path/to/experiment \
-  --score-source plasim_forecast
-
-# Use full-DJF DNS overlay curves instead of the default 12/24-12/30 window
-python script/plot_return_curve_blocking_area_pct.py --dns-ground-truth-window djf
+python script/plot_return_curve.py --confirm-scorer detected
 ```
+
+Plot a specific experiment:
+
+```bash
+python script/plot_return_curve.py --exp_path /path/to/experiment --confirm-scorer detected
+```
+
+The script reads `AI-RES/RES/experiments/logs/latest_exp_path.txt` for the
+default experiment path when `--exp_path` is not provided.
+
+## How It Works
+
+1. Reads the experiment's `_used_config.json` to detect the scorer
+2. Based on detected scorer:
+   - **HeatwaveMeanScorer** -> heatwave plotter (K->°C conversion, .npy DNS, no PDF panel)
+   - **Blocking scorers** (GridpointIntensityScorer, GridpointPersistenceScorer, ANOScorer, etc.) -> blocking plotter (NPZ DNS, optional PDF sidebar)
+3. DNS ground-truth defaults are resolved automatically per scorer type
+4. Figure saved to `figures/` by default
 
 ## Required Inputs (Minimal Checklist)
 
 1. Experiment directory with `working_tree.pkl`
-2. One of the score-source inputs:
-   - `plasim` preferred: `resampling/plasim_scores_step_{K}.npy`
-   - `plasim` fallback: final-step `step_{K}/particle_{i}/output/*.nc`
-   - `plasim_forecast`: `step_{K}/particle_{i}/forecast/*_A_<region>.npy`
-3. Scorer metadata for detection:
-   - `<exp_name>_used_config.json` (preferred)
-   - `outerr_forecasts.log` (fallback)
-4. DNS ground-truth NPZs (only if overlay is enabled and scorer is intensity):
-   - `data/return_curve_ground_truth/return_curve_block_maxima_always_12-24_to_12-30_retry2.npz` (default full curve for `12-24_to_12-30`; falls back to `return_curve_block_maxima_always_12-24_to_12-30.npz`)
-   - `data/return_curve_ground_truth/return_curve_block_maxima_always_12-24_to_12-30_retry2_subset400.npz` (default subset curve for `12-24_to_12-30`; falls back to legacy `return_curve_block_maxima_always_12-24_to_12-30_subset*.npz`)
-   - `data/return_curve_ground_truth/return_curve_block_maxima.npz` (DJF full curve)
-   - `data/return_curve_ground_truth/return_curve_block_maxima_subset400.npz` (DJF subset curve)
+2. Pre-computed scores: `resampling/plasim_scores_step_{K}.npy`
+3. Scorer metadata: `<exp_name>_used_config.json` (preferred) or `outerr_forecasts.log` (fallback)
 
 ## How To Pick `K`
 
-- For `plasim`:
-  - use the highest `resampling/plasim_scores_step_*.npy`
-  - in standard QDMC runs this is typically one step ahead of the last resampling step
-- For `plasim_forecast`:
-  - use the final step that has `step_K/particle_*/forecast/*_A_<region>.npy`
-
-Useful checks:
+Use the highest `resampling/plasim_scores_step_*.npy` (typically one step ahead
+of the last resampling step in standard QDMC runs):
 
 ```bash
-ls /glade/derecho/scratch/zhil/PLASIM/RES/experiments/<exp_basename>/<exp_name>/resampling/plasim_scores_step_*.npy
-ls /glade/derecho/scratch/zhil/PLASIM/RES/experiments/<exp_basename>/<exp_name>/step_*/particle_*/forecast/*_A_<region>.npy
+ls /path/to/experiment/resampling/plasim_scores_step_*.npy
 ```
 
-## Most-Used Flags
+## Common Flags
 
-- `--exp_path`: experiment directory
-- `--K`: step index used for particle selection and score loading
-- `--score-source {plasim,plasim_forecast}`
-- `--confirm-scorer detected` (skip interactive scorer confirmation)
-- `--show-ground-truth` / `--no-show-ground-truth`
-- `--dns-ground-truth-window {djf,12-24_to_12-30}` (default: `12-24_to_12-30`)
-- `--pdf-overlay` / `--no-pdf-overlay` (default: enabled; sideways baseline Z500 PDF, GridpointIntensityScorer only)
-- `--pdf-file` (path to baseline PDF NetCDF; default: `outputs/plasim/sim52/z500_anomaly_pdf_northatlantic_djf_daily_weighted.nc`)
-- `--season_label` (label text shown on x-axis/title)
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--exp_path` | from `latest_exp_path.txt` | Experiment directory |
+| `--K` | 7 | Final resampling step |
+| `--confirm-scorer` | None (interactive) | `detected` to accept auto-detected scorer |
+| `--output_dir` | `figures/` | Output directory |
+| `--show-ground-truth` / `--no-show-ground-truth` | enabled | Toggle DNS overlay |
+| `--show` | false | Display figure interactively |
 
-For full CLI details:
+### Blocking-Only Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dns-ground-truth-window` | `12-24_to_12-30` | DNS window (`djf` or `12-24_to_12-30`) |
+| `--pdf-overlay` / `--no-pdf-overlay` | enabled | PDF sidebar (GridpointIntensityScorer only) |
+| `--pdf-file` | built-in default | Override baseline PDF NetCDF path |
+| `--season_label` | `DJF` | Season label on title |
+
+### Heatwave-Only Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--dns-data-path` | auto-resolved | Path to DNS scores `.npy` file |
+| `--dns-subset-n` | 400 | Number of years for subset curve |
+
+For full CLI:
 
 ```bash
-python script/plot_return_curve_blocking_area_pct.py --help
+python script/plot_return_curve.py --help
 ```
 
-## DNS Overlay Behavior (Important)
+## Scorer-Specific Defaults
 
-- The DNS window selector changes only which DNS NPZ overlay files are plotted.
-- It does not change AI+RES x-axis conversion (`RP = 1 / p_window` for the fixed annual window) or `season_label`.
-- DNS plotting uses precomputed plotting-ready block-maxima NPZs (`return_curve_block_maxima*.npz`), not `all_scores.npz`.
-- For DNS curves with `method == block_maxima`, visualization is step-based (`ax.step(..., where="post")`) and the zero-valued branch is hidden to avoid misleading continuity.
-- Zeros remain in the NPZ statistics and return-period arrays; they are hidden only in the visualization.
+| Scorer | DNS format | DNS default | Unit conversion | PDF panel |
+|--------|-----------|-------------|-----------------|-----------|
+| HeatwaveMeanScorer | .npy (Weibull) | `AI-RES/.../EXP15_AIRES_France_T.7_rv_control.npy` | K -> °C | No |
+| GridpointIntensityScorer | .npz (block maxima) | `data/return_curve_ground_truth/` | None | Yes |
+| Other blocking scorers | .npz | `data/return_curve_ground_truth/` | None | No |
 
 ## Common Issues (Quick Triage)
 
 - Missing `working_tree.pkl`: wrong or incomplete experiment path
-- Missing `plasim_scores_step_K.npy`: use `.nc` fallback (default `plasim`) or switch to `plasim_forecast`
-- Missing forecast `*_A_<region>.npy`: verify `region` and per-particle forecast outputs
+- Missing `plasim_scores_step_K.npy`: check the experiment completed the QDMC run
 - Non-interactive environment: pass `--confirm-scorer detected`
-- DNS overlay warnings: check the selected DNS window files under `data/return_curve_ground_truth/`
-
-See `plot_return_curve_reference.md` for detailed troubleshooting entries.
+- DNS overlay warnings: check DNS data files exist at default or specified paths
+- No default experiment: provide `--exp_path` explicitly
 
 ## Finding The Latest Experiment Path
 
-Check:
+The unified script reads the default from:
 
 ```text
 /glade/u/home/zhil/project/AI-RES/Blocking/AI-RES/RES/experiments/logs/latest_exp_path.txt
 ```
 
-Use `output_path` from that file as `--exp_path`.
+The `output_path` value is used as `--exp_path`.
 
-## Heatwave Return Curve
+## Direct Script Access
 
-Script:
-`/glade/u/home/zhil/project/AI-RES/Blocking/script/plot_return_curve_heatwave.py`
+For explicit control, use the scorer-specific scripts directly:
 
-Plots AI+RES scatter points overlaid on DNS ground-truth return curves
-for `HeatwaveMeanScorer` experiments. Scores are plotted in °C (AI+RES
-Kelvin scores are converted by subtracting 273.15). No PDF sidebar or
-date histogram panel.
-
-### Quick Start
+### Blocking
 
 ```bash
-source /glade/u/apps/opt/miniforge/25.11/etc/profile.d/conda.sh
-conda activate /glade/work/zhil/conda_envs/aires
-
-# Default (EXP15 France, K=7)
-python script/plot_return_curve_heatwave.py
-
-# Specific experiment, non-interactive
-python script/plot_return_curve_heatwave.py \
-  --exp_path /path/to/experiment \
-  --confirm-scorer detected
+python script/plot_return_curve_blocking_area_pct.py --exp_path /path/to/experiment --confirm-scorer detected
 ```
 
-### Required Inputs
+Supports: GridpointIntensityScorer, GridpointPersistenceScorer, ANOScorer,
+IntegratedScorer, DriftPenalizedScorer, RMSEScorer.
+Features: NPZ DNS overlay, PDF sidebar (intensity scorer), .nc score fallback.
 
-1. Experiment directory with `working_tree.pkl`
-2. Pre-computed scores: `resampling/plasim_scores_step_{K}.npy`
-3. Scorer metadata: `<exp_name>_used_config.json`
-4. DNS ground-truth `.npy` (optional, for overlay)
+### Heatwave
 
-### Most-Used Flags
+```bash
+python script/plot_return_curve_heatwave.py --exp_path /path/to/experiment --confirm-scorer detected
+```
 
-- `--exp_path`: experiment directory
-- `--K`: step index (default: 7)
-- `--dns-data-path`: path to DNS scores `.npy` file
-- `--dns-subset-n`: number of years for subset curve (default: 400)
-- `--confirm-scorer detected` (skip interactive prompt)
-- `--show-ground-truth` / `--no-show-ground-truth`
-- `--output_dir`: figure output directory
-
-### Default DNS Data
-
-The default DNS ground-truth file is:
-`AI-RES/RES/experiments/saved_results/EXP15_AIRES_France/EXP15_AIRES_France_T.7_rv_control.npy`
-
-This contains 50,000 years of spatiotemporal mean near-surface temperature
-scores (in °C). The first 400 years are used for the subset curve.
-
-### Unit Conversion
-
-- DNS scores: already in °C (no conversion)
-- AI+RES scores: stored in Kelvin, converted to °C by subtracting 273.15
-
-### Scorer Enforcement
-
-This script only accepts `HeatwaveMeanScorer`. The `--confirm-scorer` flag
-is restricted to `detected` and `HeatwaveMeanScorer`. If the experiment's
-detected scorer is not `HeatwaveMeanScorer`, the script exits with an error.
+Supports: HeatwaveMeanScorer only.
+Features: K->°C conversion, .npy DNS overlay, no PDF panel.
+Default DNS: `AI-RES/RES/experiments/saved_results/EXP15_AIRES_France/EXP15_AIRES_France_T.7_rv_control.npy`
 
 ## Related Docs
 
