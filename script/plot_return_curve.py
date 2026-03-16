@@ -296,6 +296,7 @@ Examples:
         "--dns-ground-truth-window",
         type=str,
         default=DEFAULT_DNS_GROUND_TRUTH_WINDOW,
+        choices=["djf", "12-24_to_12-30"],
         help=(
             "DNS ground-truth window selector for blocking overlay "
             "(default: %(default)s)"
@@ -361,6 +362,9 @@ Examples:
     exp_path = Path(exp_path_str)
     if not exp_path.exists():
         print(f"Error: Experiment path does not exist: {exp_path}", file=sys.stderr)
+        sys.exit(1)
+    if not (exp_path / "working_tree.pkl").exists():
+        print(f"Error: Missing working tree: {exp_path / 'working_tree.pkl'}", file=sys.stderr)
         sys.exit(1)
 
     result = detect_and_dispatch(
