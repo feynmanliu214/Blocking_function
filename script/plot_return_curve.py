@@ -165,7 +165,7 @@ def detect_and_dispatch(
             region=detection["region"],
             divide_by_parent_weights=bool(detection["divide_by_parent_weights"]),
             show_ground_truth=show_ground_truth,
-            dns_data_path=Path(effective_dns) if effective_dns else None,
+            dns_data_path=Path(effective_dns),
             dns_subset_n=dns_subset_n,
             cap_rp_lower_at_tenth=cap_rp_lower_at_tenth,
             save_fig=save_fig,
