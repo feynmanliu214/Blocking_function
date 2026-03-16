@@ -5,10 +5,7 @@ import pickle
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
-
 import numpy as np
-import pytest
 
 
 class _FakeNode:
