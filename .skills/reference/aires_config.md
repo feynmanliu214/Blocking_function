@@ -62,6 +62,8 @@ Config location: `/glade/u/home/zhil/project/AI-RES/Blocking/AI-RES/RES/experime
 |-------|------|-------------|
 | `delete_output` | `true` / `false` / `"partial"` | Cleanup mode. `true`: delete old step directories (aggressive). `false`: keep all outputs. `"partial"`: delete heavy files in `step_*/particle_*/output/` but keep restart lineage and `working_tree.pkl` for trajectory reconstruction. |
 | `save_srv_output` | bool | Save raw `plasim_output` files (default: `true`) |
+| `score_change_note` | string | Free-text changelog note written to `experiment_params.json`. Use to document scorer changes between runs. Defaults to `"none"` if absent. |
+| `PATH_WORK` | string | Archive destination root (e.g., `/glade/work/zhil/PLASIM`). Required only when `--auto-delete` is passed to `submit_aires.py`. |
 
 ### Perturbation
 
@@ -126,7 +128,8 @@ From `/glade/u/home/zhil/project/AI-RES/Blocking/AI-RES/RES/regions.json`:
     "scorer": {
         "name": "IntegratedScorer",
         "params": {"n_days": 5}
-    }
+    },
+    "score_change_note": "none"
 }
 ```
 
@@ -165,8 +168,13 @@ From `/glade/u/home/zhil/project/AI-RES/Blocking/AI-RES/RES/regions.json`:
 │   ├── weights_step_*.npy    # Particle weights
 │   └── clones_step_*.npy     # Clone indices
 ├── step_*/                   # Per-step outputs
-└── <exp_name>_used_config.json
+├── <exp_name>_used_config.json
+└── experiment_params.json    # Focused scientific params (written at init, see below)
 ```
+
+### `experiment_params.json`
+
+Written at experiment start by `write_experiment_params()` in `lib_utils.sh`. Contains only scientifically relevant fields (no static infra paths). Fields: `experiment_name`, `region`, `N_particles`, `dtau`, `num_steps`, `target_duration`, `EPS_perturb`, `resampling_method`, `use_quantile`, `step_first_resampling`, `theta_type`, `splitting_constant`, `alpha`, `forecast_method`, `N_members_fcst`, `PanguPlasim_perturb`, `diverse_initial_conditions`, `perturb_from_past`, `resampling_last_step`, `divide_by_parent_weights`, `scorer`, `score_change_note`.
 
 ---
 

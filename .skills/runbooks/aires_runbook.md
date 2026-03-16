@@ -15,6 +15,12 @@ python3 experiments/submit_aires.py --exp-name EXP15_AIRES
 - `PFS` (and other non-Pangu methods): CPU script (`submit_job_derecho_AIRES.pbs`)
 - `Pangu-Plasim`: 4-node GPU script (`submit_job_derecho_AIRES_gpu.pbs`)
 
+**Submit with automatic archive + cleanup** (requires `PATH_WORK` in config):
+```bash
+python3 experiments/submit_aires.py --exp-name EXP15_AIRES --auto-delete
+```
+Chains three PBS jobs: QDMC → `archive_results.pbs` (copies outputs to `PATH_WORK`) → `post_experiment.pbs` (keeps latest 10 instances per basename, deletes older ones). Each job fires only if the previous succeeded (`afterok` dependency).
+
 **Monitor:** `qstat -u $USER`
 
 **Output:** `/glade/derecho/scratch/zhil/PLASIM/RES/experiments/<experiment_name>_<scorer_name>_<region>/`
@@ -94,6 +100,8 @@ Edit the experiment JSON in:
 | `region` | Target region | `"NorthAtlantic"`, `"France"`, `"PNW"`, `"Chicago"` |
 | `scorer` | Scoring method (see below) | `{"name": "IntegratedScorer", "variable": "z500", "params": {"n_days": 5}}` |
 | `scorer.variable` | Climate variable the scorer operates on (required) | `"z500"` or `"tas"` |
+| `score_change_note` | Free-text changelog for scorer changes; written to `experiment_params.json` | `"switched to GridpointIntensityScorer"` |
+| `PATH_WORK` | Archive destination root (needed for `--auto-delete`) | `"/glade/work/zhil/PLASIM"` |
 
 ### Change scorer
 

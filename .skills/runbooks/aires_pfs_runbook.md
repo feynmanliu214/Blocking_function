@@ -48,6 +48,8 @@ Location: `AI-RES/RES/experiments/configs/derecho/PFS/`
 | `scorer.variable` | Climate variable the scorer operates on (required) | `"z500"` or `"tas"` |
 | `POSTPROC_SCRIPT` | Postprocessor path (burn7 or postprocessor2.0) | see below |
 | `PATH_POSTPROC_NL` | burn7 namelist path | see below |
+| `score_change_note` | Free-text changelog written to `experiment_params.json`; defaults to `"none"` | `"baseline PFS run"` |
+| `PATH_WORK` | Archive destination root; required only with `--auto-delete` | `"/glade/work/zhil/PLASIM"` |
 
 **Example config** (`EXP15_PFS_pilot10.json`):
 ```json
