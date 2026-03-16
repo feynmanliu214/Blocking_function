@@ -57,7 +57,7 @@ DEFAULT_EXP_PATH = (
     "/glade/derecho/scratch/zhil/PLASIM/RES/experiments/EXP28_AIRES_NorthAtlantic/"
     "EXP28_AIRES_NorthAtlantic_4"
 )
-DEFAULT_OUTPUT_DIR = "/glade/u/home/zhil/project/AI-RES/Blocking/figures"
+DEFAULT_OUTPUT_DIR = "/glade/u/home/zhil/project/AI-RES/Blocking/figures/AI-RES-return_curve"
 DEFAULT_K = 7
 DEFAULT_SEASON_LABEL = "DJF"
 DEFAULT_CAP_RP_LOWER_AT_TENTH = True

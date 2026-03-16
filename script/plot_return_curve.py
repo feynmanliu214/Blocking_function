@@ -58,7 +58,7 @@ DEFAULT_HEATWAVE_DNS_PATH = str(
     / "EXP15_AIRES_France_T.7_rv_control.npy"
 )
 
-DEFAULT_OUTPUT_DIR = str(_PROJECT_ROOT / "figures")
+DEFAULT_OUTPUT_DIR = str(_PROJECT_ROOT / "figures" / "AI-RES-return_curve")
 DEFAULT_K = 7
 DEFAULT_SEASON_LABEL = "DJF"
 DEFAULT_DNS_SUBSET_N = 400

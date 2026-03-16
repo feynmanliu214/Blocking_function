@@ -65,7 +65,7 @@ DEFAULT_EXP_PATH = (
     "/glade/derecho/scratch/zhil/PLASIM/RES/experiments/EXP15_AIRES_France/"
     "EXP15_AIRES_France_0"
 )
-DEFAULT_OUTPUT_DIR = str(_PROJECT_ROOT / "figures")
+DEFAULT_OUTPUT_DIR = str(_PROJECT_ROOT / "figures" / "AI-RES-return_curve")
 DEFAULT_K = 7
 DEFAULT_DNS_DATA_PATH = str(
     _PROJECT_ROOT
