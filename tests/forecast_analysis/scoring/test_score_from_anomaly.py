@@ -46,6 +46,11 @@ def _make_region_bounds():
     }
 
 
+# Module-level helpers used by multiple tests
+BOUNDS = _make_region_bounds()
+_make_z500_anom = _make_anom
+
+
 def _make_threshold_90(value=400.0):
     """Monthly threshold dict: all months set to value."""
     return {m: value for m in range(1, 13)}
@@ -110,10 +115,7 @@ def test_ano_scorer_score_from_anomaly_returns_float():
 # ---------------------------------------------------------------------------
 
 def test_gridpoint_persistence_score_from_anomaly():
-    scorer = GridpointPersistenceScorer.__new__(GridpointPersistenceScorer)
-    scorer.min_persistence = 5
-    scorer._climatology = None
-    scorer._thresholds = None
+    scorer = GridpointPersistenceScorer(min_persistence=5)
 
     z500_anom = _make_anom(n_time=10, value=500.0)
     threshold_90 = _make_threshold_90(value=400.0)  # all points above threshold
@@ -131,10 +133,7 @@ def test_gridpoint_persistence_score_from_anomaly():
 
 
 def test_gridpoint_persistence_score_from_anomaly_requires_threshold():
-    scorer = GridpointPersistenceScorer.__new__(GridpointPersistenceScorer)
-    scorer.min_persistence = 5
-    scorer._climatology = None
-    scorer._thresholds = None
+    scorer = GridpointPersistenceScorer(min_persistence=5)
 
     z500_anom = _make_anom(n_time=10, value=500.0)
 
@@ -153,10 +152,7 @@ def test_gridpoint_persistence_score_from_anomaly_requires_threshold():
 # ---------------------------------------------------------------------------
 
 def test_gridpoint_intensity_score_from_anomaly():
-    scorer = GridpointIntensityScorer.__new__(GridpointIntensityScorer)
-    scorer.min_persistence = 5
-    scorer._climatology = None
-    scorer._thresholds = None
+    scorer = GridpointIntensityScorer(min_persistence=5)
 
     z500_anom = _make_anom(n_time=10, value=500.0)
     threshold_90 = _make_threshold_90(value=400.0)  # all points above threshold
@@ -171,3 +167,17 @@ def test_gridpoint_intensity_score_from_anomaly():
     )
     assert isinstance(result, float), f"Expected float, got {type(result)}"
     assert result >= 0.0
+
+
+def test_heatwave_scorer_raises_not_implemented():
+    """HeatwaveMeanScorer inherits NotImplementedError default from base."""
+    from forecast_analysis.scoring import HeatwaveMeanScorer
+    scorer = HeatwaveMeanScorer(n_days=7)
+    z500_anom = _make_z500_anom()
+    with pytest.raises(NotImplementedError):
+        scorer.score_from_anomaly(
+            z500_anom=z500_anom,
+            event_info={},
+            region_bounds=BOUNDS,
+            onset_time_idx=0,
+        )

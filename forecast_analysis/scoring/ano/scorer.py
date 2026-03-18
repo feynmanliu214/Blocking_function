@@ -568,8 +568,6 @@ class ANOScorer(BlockingScorer):
     def score_from_anomaly(self, z500_anom, event_info, region_bounds,
                            onset_time_idx, threshold_90=None, scorer_params=None):
         """Produce scalar score from anomaly + event_info."""
-        import xarray as xr
-
         event_info_copy = dict(event_info)
         event_info_copy["z500_anom"] = z500_anom
 
