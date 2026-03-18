@@ -103,6 +103,14 @@ def test_integrated_scorer_onset_time_idx_in_scorer(regions_json):
     assert ctx.scorer.onset_time_idx == 7
 
 
+def test_drift_penalized_scorer_alias_produces_ano_scorer(regions_json):
+    scorer_json = {"name": "DriftPenalizedScorer", "variable": "z500", "params": {"n_days": 5}}
+    ctx = build_scorer_context(scorer_json, "NorthAtlantic", regions_json, onset_time_idx=7)
+    assert isinstance(ctx.scorer, ANOScorer)
+    assert ctx.scorer_params.get("mode") == "auto"
+    assert ctx.scorer_params.get("use_drift_penalty") == True
+
+
 # --- Region selector ---
 
 def test_heatwave_region_uses_explicit_points_from_regions_json(regions_json):
