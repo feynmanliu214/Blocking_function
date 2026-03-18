@@ -28,20 +28,8 @@ from forecast_analysis.scoring.pipeline import (
 # ---------------------------------------------------------------------------
 
 def make_ctx(scorer_name, scorer_params, variable, region_bounds, onset_time_idx):
-    from forecast_analysis.scoring import SCORER_REGISTRY
-    from forecast_analysis.scoring.context import ScorerContext
-    import inspect
-    cls = SCORER_REGISTRY[scorer_name]
-    sig = inspect.signature(cls.__init__)
-    known = set(sig.parameters) - {"self"}
-    # Do NOT strip onset_time_idx: ANOScorer(mode="onset") requires it in __init__.
-    # Only strip "lead_time" which is not an actual constructor param.
-    init_kwargs = {k: v for k, v in scorer_params.items()
-                   if k in known and k not in {"lead_time"}}
-    # Guarantee onset-mode ANOScorer gets onset_time_idx even if scorer_params omits it
-    if scorer_name == "ANOScorer" and scorer_params.get("mode") == "onset":
-        init_kwargs["onset_time_idx"] = onset_time_idx
-    scorer = cls(**init_kwargs)
+    from forecast_analysis.scoring.context import ScorerContext, _instantiate_scorer
+    scorer = _instantiate_scorer(scorer_name, scorer_params, onset_time_idx, region_bounds)
     return ScorerContext(scorer=scorer, variable=variable, region_bounds=region_bounds,
                          onset_time_idx=onset_time_idx, scorer_params=scorer_params)
 

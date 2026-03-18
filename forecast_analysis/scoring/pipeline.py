@@ -132,10 +132,12 @@ def score_single_member(
     ValueError
         On scorer/variable mismatch or missing required inputs.
     """
-    from forecast_analysis.scoring import validate_scorer_variable
-
     # ---- 1. Fail-fast validation ------------------------------------------
-    validate_scorer_variable(type(ctx.scorer).__name__, ctx.variable)
+    if ctx.scorer.required_variable != ctx.variable:
+        raise ValueError(
+            f"Variable '{ctx.variable}' does not match scorer's required variable "
+            f"'{ctx.scorer.required_variable}'."
+        )
 
     # ---- 2. Non-anomaly path: call scorer object directly ------------------
     if not ctx.scorer.requires_anomaly:
