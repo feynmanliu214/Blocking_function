@@ -101,46 +101,26 @@ def prepare_daily_field(
 
 def score_single_member(
     field_daily: xr.DataArray,
-    scorer_name: str,
-    scorer_params: dict,
-    variable: str,
-    region_bounds: dict,
-    onset_time_idx: int,
+    ctx: "ScorerContext",
     z500_clim: Optional[xr.DataArray] = None,
     threshold_90: Optional[Dict[int, float]] = None,
 ) -> float:
     """Full scoring pipeline for one ensemble member.
 
-    1. Validates the scorer/variable combination.
-    2. Checks whether the scorer requires anomalies:
-
-       * **Anomaly path** (z500-based scorers):
-         compute anomalies with external climatology, optionally run
-         blocking detection, then call ``compute_res_score(z500_anom=...)``.
-       * **Raw-field path** (e.g. ``HeatwaveMeanScorer``):
-         call ``compute_res_score(field_data=...)``.
+    Uses ctx.scorer object directly for both anomaly and raw-field paths.
+    Does NOT call compute_res_score() — scorer dispatch is encapsulated
+    in the scorer class via score_from_anomaly() or compute_score_from_field().
 
     Parameters
     ----------
     field_daily : xr.DataArray
-        Daily-averaged field produced by :func:`prepare_daily_field`.
-    scorer_name : str
-        Scorer name accepted by the registry (e.g. ``"ANOScorer"``,
-        ``"GridpointIntensityScorer"``, ``"HeatwaveMeanScorer"``).
-    scorer_params : dict
-        Parameters forwarded to the scorer constructor.
-    variable : str
-        ``"z500"`` or ``"tas"``.
-    region_bounds : dict
-        Bounding box ``{lon_min, lon_max, lat_min, lat_max}``.
-    onset_time_idx : int
-        Daily time index for blocking/event onset.
+        Daily-averaged field from prepare_daily_field().
+    ctx : ScorerContext
+        Pre-built context from build_scorer_context().
     z500_clim : xr.DataArray, optional
-        Day-of-year climatology for anomaly computation.
-        Required when the scorer needs anomalies.
+        Climatology for anomaly computation; required if ctx.scorer.requires_anomaly.
     threshold_90 : dict, optional
-        Monthly 90th-percentile thresholds for blocking detection.
-        Required when the scorer needs blocking detection.
+        Monthly blocking thresholds; required if ctx.scorer.requires_blocking_detection.
 
     Returns
     -------
@@ -150,34 +130,26 @@ def score_single_member(
     Raises
     ------
     ValueError
-        On scorer/variable mismatch.
+        On scorer/variable mismatch or missing required inputs.
     """
-    from forecast_analysis.scoring import (
-        compute_res_score,
-        validate_scorer_variable,
-        scorer_requires_anomaly,
-        scorer_requires_blocking_detection,
-    )
+    from forecast_analysis.scoring import validate_scorer_variable
 
     # ---- 1. Fail-fast validation ------------------------------------------
-    validate_scorer_variable(scorer_name, variable)
+    validate_scorer_variable(type(ctx.scorer).__name__, ctx.variable)
 
-    # ---- 2. Dispatch -------------------------------------------------------
-    if not scorer_requires_anomaly(scorer_name):
-        # Raw-field path (e.g. HeatwaveMeanScorer)
-        return compute_res_score(
-            scorer_name=scorer_name,
-            scorer_params=scorer_params,
-            region_bounds=region_bounds,
-            onset_time_idx=onset_time_idx,
+    # ---- 2. Non-anomaly path: call scorer object directly ------------------
+    if not ctx.scorer.requires_anomaly:
+        return ctx.scorer.compute_score_from_field(
             field_data=field_daily,
+            onset_time_idx=ctx.onset_time_idx,
+            region_bounds=ctx.region_bounds,
         )
 
-    # ---- Anomaly path ------------------------------------------------------
+    # ---- 3. Anomaly path ---------------------------------------------------
     if z500_clim is None:
         raise ValueError(
-            f"Scorer '{scorer_name}' requires z500_clim for anomaly computation, "
-            "but z500_clim=None was provided."
+            f"Scorer '{type(ctx.scorer).__name__}' requires z500_clim, "
+            "but None was provided."
         )
 
     from forecast_analysis.data_loading import compute_anomalies_with_climatology
@@ -185,11 +157,11 @@ def score_single_member(
     z500_anom = compute_anomalies_with_climatology(field_daily, z500_clim)
 
     # Blocking detection (if required by scorer)
-    if scorer_requires_blocking_detection(scorer_name):
+    if ctx.scorer.requires_blocking_detection:
         if threshold_90 is None:
             raise ValueError(
-                f"Scorer '{scorer_name}' requires threshold_90 for blocking detection, "
-                "but threshold_90=None was provided."
+                f"Scorer '{type(ctx.scorer).__name__}' requires threshold_90, "
+                "but None was provided."
             )
         from ANO_PlaSim import create_blocking_mask_fast, identify_blocking_events
 
@@ -198,14 +170,13 @@ def score_single_member(
     else:
         event_info = {}
 
-    return compute_res_score(
-        scorer_name=scorer_name,
-        scorer_params=scorer_params,
+    return ctx.scorer.score_from_anomaly(
         z500_anom=z500_anom,
         event_info=event_info,
-        region_bounds=region_bounds,
-        onset_time_idx=onset_time_idx,
+        region_bounds=ctx.region_bounds,
+        onset_time_idx=ctx.onset_time_idx,
         threshold_90=threshold_90,
+        scorer_params=ctx.scorer_params,  # carries n_days, fallback_to_nonblocked, etc.
     )
 
 

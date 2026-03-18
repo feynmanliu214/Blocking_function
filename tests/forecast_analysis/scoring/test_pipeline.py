@@ -27,6 +27,25 @@ from forecast_analysis.scoring.pipeline import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+def make_ctx(scorer_name, scorer_params, variable, region_bounds, onset_time_idx):
+    from forecast_analysis.scoring import SCORER_REGISTRY
+    from forecast_analysis.scoring.context import ScorerContext
+    import inspect
+    cls = SCORER_REGISTRY[scorer_name]
+    sig = inspect.signature(cls.__init__)
+    known = set(sig.parameters) - {"self"}
+    # Do NOT strip onset_time_idx: ANOScorer(mode="onset") requires it in __init__.
+    # Only strip "lead_time" which is not an actual constructor param.
+    init_kwargs = {k: v for k, v in scorer_params.items()
+                   if k in known and k not in {"lead_time"}}
+    # Guarantee onset-mode ANOScorer gets onset_time_idx even if scorer_params omits it
+    if scorer_name == "ANOScorer" and scorer_params.get("mode") == "onset":
+        init_kwargs["onset_time_idx"] = onset_time_idx
+    scorer = cls(**init_kwargs)
+    return ScorerContext(scorer=scorer, variable=variable, region_bounds=region_bounds,
+                         onset_time_idx=onset_time_idx, scorer_params=scorer_params)
+
+
 def _make_z500_dataset(var_name="zg", with_plev=True):
     """Build a minimal Dataset containing a z500-like variable."""
     n_time, n_lat, n_lon = 8, 5, 10
@@ -252,7 +271,7 @@ class TestScoreSingleMemberBlocking:
 
     def test_blocking_path_calls_pipeline(self):
         """score_single_member with a z500-based scorer exercises the full
-        anomaly -> blocking detection -> compute_res_score chain.
+        anomaly -> blocking detection -> scorer.score_from_anomaly() chain.
 
         We mock the heavy ANO_PlaSim functions and compute_anomalies to keep
         the test fast and self-contained.
@@ -282,16 +301,21 @@ class TestScoreSingleMemberBlocking:
 
         expected_score = 42.0
 
+        ctx = make_ctx(
+            scorer_name="GridpointPersistenceScorer",
+            scorer_params={"min_persistence": 5},
+            variable="z500",
+            region_bounds=REGION,
+            onset_time_idx=3,
+        )
+
         with (
             mock.patch(
                 "forecast_analysis.data_loading.compute_anomalies_with_climatology",
                 return_value=fake_anom,
             ) as mock_anom,
             mock.patch.dict("sys.modules", {"ANO_PlaSim": mock.MagicMock()}),
-            mock.patch(
-                "forecast_analysis.scoring.compute_res_score",
-                return_value=expected_score,
-            ) as mock_score,
+            mock.patch.object(ctx.scorer, "score_from_anomaly", return_value=expected_score) as mock_score,
         ):
             # Configure the ANO_PlaSim mock functions
             import sys as _sys
@@ -300,11 +324,7 @@ class TestScoreSingleMemberBlocking:
             ano_mock.identify_blocking_events.return_value = (None, fake_event_info)
             score = score_single_member(
                 field_daily=field_daily,
-                scorer_name="GridpointPersistenceScorer",
-                scorer_params={"min_persistence": 5},
-                variable="z500",
-                region_bounds=REGION,
-                onset_time_idx=3,
+                ctx=ctx,
                 z500_clim=xr.DataArray([0]),  # dummy
                 threshold_90={1: 100.0},       # dummy
             )
@@ -314,7 +334,7 @@ class TestScoreSingleMemberBlocking:
         mock_score.assert_called_once()
 
     def test_anomaly_scorer_no_blocking_detection(self):
-        """ANOScorer with scorer_requires_blocking_detection=False should
+        """ANOScorer with requires_blocking_detection=False should
         skip the blocking detection step.
         """
         n_time, n_lat, n_lon = 10, 5, 8
@@ -332,34 +352,34 @@ class TestScoreSingleMemberBlocking:
         fake_anom = field_daily.copy()
         expected_score = 7.5
 
+        ctx = make_ctx(
+            scorer_name="ANOScorer",
+            scorer_params={"mode": "onset", "n_days": 5},
+            variable="z500",
+            region_bounds=REGION,
+            onset_time_idx=2,
+        )
+
         with (
             mock.patch(
                 "forecast_analysis.data_loading.compute_anomalies_with_climatology",
                 return_value=fake_anom,
             ),
-            mock.patch(
-                "forecast_analysis.scoring.scorer_requires_blocking_detection",
-                return_value=False,
+            mock.patch.object(
+                type(ctx.scorer), "requires_blocking_detection",
+                new_callable=lambda: property(lambda self: False),
             ),
-            mock.patch(
-                "forecast_analysis.scoring.compute_res_score",
-                return_value=expected_score,
-            ) as mock_score,
+            mock.patch.object(ctx.scorer, "score_from_anomaly", return_value=expected_score) as mock_score,
         ):
             score = score_single_member(
                 field_daily=field_daily,
-                scorer_name="ANOScorer",
-                scorer_params={"mode": "onset", "n_days": 5},
-                variable="z500",
-                region_bounds=REGION,
-                onset_time_idx=2,
+                ctx=ctx,
                 z500_clim=xr.DataArray([0]),
                 threshold_90={1: 100.0},
             )
 
         assert score == expected_score
-        # Verify that blocking detection was NOT called — the event_info
-        # should be an empty dict.
+        # Verify that score_from_anomaly was called with event_info={}
         call_kwargs = mock_score.call_args.kwargs
         assert call_kwargs["event_info"] == {}
 
@@ -381,21 +401,24 @@ class TestScoreSingleMemberHeatwave:
             name="tas",
         )
 
-        region = {"lon_min": -95, "lon_max": -85, "lat_min": 35, "lat_max": 50}
+        region = {"lon": [-95.0, -90.0, -85.0], "lat": [35.0, 42.5, 50.0]}
 
         expected_score = 300.0
 
-        with mock.patch(
-            "forecast_analysis.scoring.compute_res_score",
-            return_value=expected_score,
+        ctx = make_ctx(
+            scorer_name="HeatwaveMeanScorer",
+            scorer_params={"n_days": 5},
+            variable="tas",
+            region_bounds=region,
+            onset_time_idx=0,
+        )
+
+        with mock.patch.object(
+            ctx.scorer, "compute_score_from_field", return_value=expected_score
         ) as mock_score:
             score = score_single_member(
                 field_daily=field_daily,
-                scorer_name="HeatwaveMeanScorer",
-                scorer_params={"n_days": 5},
-                variable="tas",
-                region_bounds=region,
-                onset_time_idx=0,
+                ctx=ctx,
                 # z500_clim and threshold_90 not needed
             )
 
@@ -403,8 +426,8 @@ class TestScoreSingleMemberHeatwave:
         mock_score.assert_called_once()
         call_kwargs = mock_score.call_args.kwargs
         assert "field_data" in call_kwargs
-        # The anomaly path should NOT be invoked — no z500_anom in kwargs
-        assert call_kwargs.get("z500_anom") is None or "z500_anom" not in call_kwargs
+        assert call_kwargs["region_bounds"] == region
+        assert call_kwargs["onset_time_idx"] == 0
 
 
 class TestScoreSingleMemberVariableMismatch:
@@ -415,14 +438,17 @@ class TestScoreSingleMemberVariableMismatch:
             np.ones((5, 3, 3)),
             dims=["time", "lat", "lon"],
         )
+        ctx = make_ctx(
+            scorer_name="GridpointPersistenceScorer",
+            scorer_params={},
+            variable="tas",  # mismatch: scorer expects z500
+            region_bounds=REGION,
+            onset_time_idx=0,
+        )
         with pytest.raises(ValueError, match="does not match"):
             score_single_member(
                 field_daily=field_daily,
-                scorer_name="GridpointPersistenceScorer",
-                scorer_params={},
-                variable="tas",  # mismatch: scorer expects z500
-                region_bounds=REGION,
-                onset_time_idx=0,
+                ctx=ctx,
             )
 
     def test_tas_scorer_with_z500_variable(self):
@@ -430,14 +456,17 @@ class TestScoreSingleMemberVariableMismatch:
             np.ones((5, 3, 3)),
             dims=["time", "lat", "lon"],
         )
+        ctx = make_ctx(
+            scorer_name="HeatwaveMeanScorer",
+            scorer_params={},
+            variable="z500",  # mismatch: scorer expects tas
+            region_bounds=REGION,
+            onset_time_idx=0,
+        )
         with pytest.raises(ValueError, match="does not match"):
             score_single_member(
                 field_daily=field_daily,
-                scorer_name="HeatwaveMeanScorer",
-                scorer_params={},
-                variable="z500",  # mismatch: scorer expects tas
-                region_bounds=REGION,
-                onset_time_idx=0,
+                ctx=ctx,
             )
 
 
@@ -455,14 +484,17 @@ class TestScoreSingleMemberNullGuards:
             np.ones((5, 3, 3)),
             dims=["time", "lat", "lon"],
         )
+        ctx = make_ctx(
+            scorer_name="GridpointPersistenceScorer",
+            scorer_params={"min_persistence": 5},
+            variable="z500",
+            region_bounds=REGION,
+            onset_time_idx=0,
+        )
         with pytest.raises(ValueError, match="requires z500_clim"):
             score_single_member(
                 field_daily=field_daily,
-                scorer_name="GridpointPersistenceScorer",
-                scorer_params={"min_persistence": 5},
-                variable="z500",
-                region_bounds=REGION,
-                onset_time_idx=0,
+                ctx=ctx,
                 z500_clim=None,
                 threshold_90={1: 100.0},
             )
@@ -482,24 +514,28 @@ class TestScoreSingleMemberNullGuards:
         )
         fake_anom = field_daily.copy()
 
+        ctx = make_ctx(
+            scorer_name="ANOScorer",
+            scorer_params={"mode": "onset", "n_days": 5},
+            variable="z500",
+            region_bounds=REGION,
+            onset_time_idx=2,
+        )
+
         with (
             mock.patch(
                 "forecast_analysis.data_loading.compute_anomalies_with_climatology",
                 return_value=fake_anom,
             ),
-            mock.patch(
-                "forecast_analysis.scoring.scorer_requires_blocking_detection",
-                return_value=True,
+            mock.patch.object(
+                type(ctx.scorer), "requires_blocking_detection",
+                new_callable=lambda: property(lambda self: True),
             ),
         ):
             with pytest.raises(ValueError, match="requires threshold_90"):
                 score_single_member(
                     field_daily=field_daily,
-                    scorer_name="ANOScorer",
-                    scorer_params={"mode": "onset", "n_days": 5},
-                    variable="z500",
-                    region_bounds=REGION,
-                    onset_time_idx=2,
+                    ctx=ctx,
                     z500_clim=xr.DataArray([0]),  # non-None so we pass the first guard
                     threshold_90=None,
                 )
