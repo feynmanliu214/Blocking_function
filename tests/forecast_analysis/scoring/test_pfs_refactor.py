@@ -123,16 +123,19 @@ class TestScorerRequired:
 
 
 class TestScorerVariableRequired:
-    """compute_B_int_single_file must raise KeyError when scorer_config
-    has no 'variable' key.
+    """Variable validation now happens in build_scorer_context (tested in
+    test_build_scorer_context.py).  This class is retained for the subprocess
+    smoke test: PFS.py must fail when scorer has no 'variable' key.
     """
 
-    def test_missing_variable_raises_keyerror(self, tmp_path):
-        """scorer_config without 'variable' must produce a KeyError."""
-        # We need to import compute_B_int_single_file.  PFS.py runs
-        # module-level code that parses args and loads a config.  To avoid
-        # that, we import it from the file directly after patching sys.argv
-        # and providing a valid config with a scorer key.
+    def test_missing_variable_in_subprocess(self, tmp_path):
+        """Running PFS.py with scorer missing 'variable' must fail with
+        a clear error message about 'scorer.variable'.
+        """
+        regions_json = tmp_path / "regions.json"
+        regions_json.write_text(json.dumps({
+            "NorthAtlantic": {"lon": [-60.0, 0.0], "lat": [55.0, 75.0]},
+        }))
         config = {
             "path_restart": "/tmp/fake",
             "dir_output": str(tmp_path),
@@ -147,7 +150,7 @@ class TestScorerVariableRequired:
             "PATH_REFERENCE_RUN_DIR": "/tmp",
             "PATH_POSTPROC_NL": "/tmp/nl",
             "POSTPROC_SCRIPT": "/tmp/postproc.sh",
-            "PATH_REGIONS": "/tmp/regions.json",
+            "PATH_REGIONS": str(regions_json),
             "DIR_PFS": "/tmp/pfs",
             "scorer": {"name": "GridpointPersistenceScorer", "params": {}},
             # NOTE: scorer has no 'variable' key
@@ -155,53 +158,18 @@ class TestScorerVariableRequired:
         config_path = tmp_path / "test_config.json"
         config_path.write_text(json.dumps(config))
 
-        # Build a fake args tuple matching the expected signature of
-        # compute_B_int_single_file, with a scorer_config missing 'variable'.
-        scorer_config_no_var = {"name": "GridpointPersistenceScorer", "params": {}}
-        region_bounds = {
-            "NorthAtlantic": {
-                "lon_min": -60, "lon_max": 0,
-                "lat_min": 55, "lat_max": 75,
-            }
-        }
-
-        # Create a dummy netCDF file
-        nc_path = tmp_path / "dummy.nc"
-        ds = xr.Dataset({
-            "zg": xr.DataArray(
-                np.ones((10, 5, 10)),
-                dims=["time", "lat", "lon"],
-                coords={
-                    "time": np.arange(10),
-                    "lat": np.linspace(30, 80, 5),
-                    "lon": np.linspace(0, 350, 10),
-                },
-            )
-        })
-        ds.to_netcdf(str(nc_path))
-
-        args_tuple = (
-            str(nc_path),       # path
-            5,                  # target_duration
-            0,                  # lead_time
-            "NorthAtlantic",    # region
-            region_bounds,      # region_bounds
-            None,               # z500_clim
-            None,               # threshold_90
-            scorer_config_no_var,  # scorer_config — missing 'variable'
+        result = subprocess.run(
+            [sys.executable, _PFS_PY, "--config", str(config_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
 
-        # Import compute_B_int_single_file by loading PFS.py as a module.
-        # We patch sys.argv and provide a valid config so the module-level
-        # code executes without error.
-        import importlib.util
-        with mock.patch("sys.argv", ["PFS.py", "--config", str(config_path)]):
-            spec = importlib.util.spec_from_file_location("pfs_module", _PFS_PY)
-            pfs_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(pfs_module)
-
-        with pytest.raises(KeyError, match="variable"):
-            pfs_module.compute_B_int_single_file(args_tuple)
+        assert result.returncode != 0
+        combined = result.stdout + result.stderr
+        assert "scorer.variable" in combined or "variable" in combined.lower(), (
+            f"Expected error about missing variable.\nOutput: {combined}"
+        )
 
 
 # ===========================================================================
@@ -256,28 +224,31 @@ class TestComputeBIntDelegatesToPipeline:
         })
         ds.to_netcdf(str(nc_path))
 
-        region_bounds = {
-            "NorthAtlantic": {
-                "lon_min": -60, "lon_max": 0,
-                "lat_min": 55, "lat_max": 75,
-            }
-        }
-
         scorer_cfg = {
             "name": "GridpointPersistenceScorer",
             "params": {"min_persistence": 5},
             "variable": "z500",
         }
 
+        # Build a real ScorerContext so region_bounds carries ctx objects
+        regions_json = tmp_path / "regions.json"
+        regions_json.write_text(json.dumps({
+            "NorthAtlantic": {"lon": [-60.0, 0.0], "lat": [55.0, 75.0]},
+        }))
+        from forecast_analysis.scoring.context import build_scorer_context, ScorerContext
+        ctx = build_scorer_context(scorer_cfg, "NorthAtlantic", regions_json, onset_time_idx=0)
+        # region_bounds is repurposed to carry {region: ScorerContext}
+        region_bounds = {"NorthAtlantic": ctx}
+
         args_tuple = (
             str(nc_path),
             5,
             0,
             "NorthAtlantic",
-            region_bounds,
+            region_bounds,       # carries ScorerContext objects now
             xr.DataArray([0]),   # z500_clim dummy
-            {1: 100.0},         # threshold_90 dummy
-            scorer_cfg,
+            {1: 100.0},          # threshold_90 dummy
+            scorer_cfg,          # still in tuple (unused inside function)
         )
 
         # Import the module
@@ -316,7 +287,7 @@ class TestComputeBIntDelegatesToPipeline:
         mock_prepare.assert_called_once()
         mock_score.assert_called_once()
 
-        # Verify score_single_member received the right scorer config
+        # Verify score_single_member received ScorerContext with right attributes
         call_kwargs = mock_score.call_args.kwargs
-        assert call_kwargs["scorer_name"] == "GridpointPersistenceScorer"
-        assert call_kwargs["variable"] == "z500"
+        assert isinstance(call_kwargs["ctx"], ScorerContext)
+        assert call_kwargs["ctx"].variable == "z500"
