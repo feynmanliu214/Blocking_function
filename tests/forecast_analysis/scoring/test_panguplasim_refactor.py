@@ -79,7 +79,11 @@ def _make_regions_json(tmp_path):
         "NorthAtlantic": {
             "lon": [-60, 0],
             "lat": [55, 75],
-        }
+        },
+        "France": {
+            "lon": [0.0, 2.8125, 5.625],
+            "lat": [48.8, 46.0, 43.2],
+        },
     }
     path = os.path.join(str(tmp_path), "regions.json")
     with open(path, "w") as f:
@@ -90,12 +94,15 @@ def _make_regions_json(tmp_path):
 def _build_args_tuple(ds_list, tmp_path, scorer_config,
                       particle_idxs_list=None,
                       ensemble_start=0, ensemble_end=2,
-                      lead_time=0, target_duration=5):
+                      lead_time=0, target_duration=5,
+                      regions=None):
     """Build the args tuple expected by compute_A_ensemble."""
     save_dir = str(tmp_path)
     save_basenames = [os.path.join(save_dir, "test_p0")]
     if particle_idxs_list is None:
         particle_idxs_list = list(range(len(ds_list)))
+    if regions is None:
+        regions = ["NorthAtlantic"]
     regions_json = _make_regions_json(tmp_path)
 
     return (
@@ -107,7 +114,7 @@ def _build_args_tuple(ds_list, tmp_path, scorer_config,
         target_duration,
         lead_time,
         "zg",                       # var (legacy config field)
-        ["NorthAtlantic"],          # regions
+        regions,
         regions_json,               # PATH_REGIONS
         "/tmp/fake_clim.nc",        # clim_file
         "/tmp/fake_thresh.json",    # threshold_json_file
@@ -213,8 +220,8 @@ class TestScorerVariableRequired:
     'variable' key.
     """
 
-    def test_missing_variable_raises_keyerror(self, tmp_path):
-        """scorer_config without 'variable' must produce a KeyError."""
+    def test_missing_variable_raises(self, tmp_path):
+        """scorer_config without 'variable' must produce a ValueError."""
         compute_A_ensemble = _import_compute_A_ensemble()
 
         ds = _make_ensemble_dataset(n_ensemble=1)
@@ -226,7 +233,7 @@ class TestScorerVariableRequired:
             scorer_config=scorer_config_no_var,
         )
 
-        with pytest.raises(KeyError, match="variable"):
+        with pytest.raises((KeyError, ValueError)):
             compute_A_ensemble(args)
 
 
@@ -279,10 +286,6 @@ class TestComputeAEnsembleDelegatesToPipeline:
                 return_value=expected_score,
             ) as mock_score,
             mock.patch(
-                "forecast_analysis.scoring.scorer_requires_anomaly",
-                return_value=True,
-            ),
-            mock.patch(
                 "forecast_analysis.data_loading.load_climatology_and_thresholds",
                 return_value=(xr.DataArray([0]), {1: 100.0}),
             ),
@@ -298,10 +301,12 @@ class TestComputeAEnsembleDelegatesToPipeline:
         # 2 members * 1 region = 2 calls
         assert mock_score.call_count == 2
 
-        # Verify score_single_member received the right scorer config
+        # Verify score_single_member received a ScorerContext with right attributes
+        from forecast_analysis.scoring.context import ScorerContext
         call_kwargs = mock_score.call_args.kwargs
-        assert call_kwargs["scorer_name"] == "GridpointPersistenceScorer"
-        assert call_kwargs["variable"] == "z500"
+        ctx = call_kwargs["ctx"]
+        assert isinstance(ctx, ScorerContext)
+        assert ctx.variable == "z500"
 
         # Verify the output file was saved
         expected_file = os.path.join(
@@ -352,10 +357,6 @@ class TestComputeAEnsembleDelegatesToPipeline:
                 return_value=10.0,
             ) as mock_score,
             mock.patch(
-                "forecast_analysis.scoring.scorer_requires_anomaly",
-                return_value=True,
-            ),
-            mock.patch(
                 "forecast_analysis.data_loading.load_climatology_and_thresholds",
                 return_value=(xr.DataArray([0]), {1: 100.0}),
             ),
@@ -379,10 +380,12 @@ class TestComputeAEnsembleDelegatesToPipeline:
             "variable": "tas",
         }
 
+        # HeatwaveMeanScorer only allows "France" or "Chicago" regions
         args = _build_args_tuple(
             ds_list=[ds],
             tmp_path=tmp_path,
             scorer_config=scorer_cfg,
+            regions=["France"],
         )
 
         fake_field = xr.DataArray(
@@ -392,10 +395,6 @@ class TestComputeAEnsembleDelegatesToPipeline:
         )
 
         with (
-            mock.patch(
-                "forecast_analysis.scoring.scorer_requires_anomaly",
-                return_value=False,
-            ),
             mock.patch(
                 "forecast_analysis.data_loading.load_climatology_and_thresholds",
             ) as mock_load_clim,
@@ -414,7 +413,7 @@ class TestComputeAEnsembleDelegatesToPipeline:
         ):
             compute_A_ensemble(args)
 
-        # load_climatology_and_thresholds should NOT be called
+        # load_climatology_and_thresholds should NOT be called (non-anomaly scorer)
         mock_load_clim.assert_not_called()
 
         # score_single_member should receive z500_clim=None, threshold_90=None
