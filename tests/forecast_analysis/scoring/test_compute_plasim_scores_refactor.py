@@ -12,6 +12,7 @@ Covers:
 
 import json
 import os
+import importlib.util
 import subprocess
 import sys
 
@@ -63,14 +64,58 @@ def _run_script(tmp_path, config, extra_args=None, timeout=30):
     )
 
 
-def _base_config():
-    """Return a minimal config dict with required top-level keys."""
+_SAMPLE_REGIONS = {
+    "NorthAtlantic": {"lon": [-60.0, 0.0], "lat": [55.0, 75.0]},
+    "France": {"lon": [0.0, 2.8125, 5.625], "lat": [48.8, 46.0, 43.2]},
+}
+
+
+def _make_regions_json(tmp_path):
+    """Write regions.json to tmp_path and return the directory path as str."""
+    p = os.path.join(str(tmp_path), "regions.json")
+    with open(p, "w") as f:
+        json.dump(_SAMPLE_REGIONS, f)
+    return str(tmp_path)
+
+
+def _base_config(tmp_path=None):
+    """Return a minimal config dict with required top-level keys.
+
+    When *tmp_path* is provided, creates regions.json there and sets PATH_CODE
+    accordingly so that build_scorer_context can resolve region bounds.
+    """
+    path_code = _make_regions_json(tmp_path) if tmp_path is not None else "/tmp"
     return {
         "N_particles": 1,
         "region": "NorthAtlantic",
-        "PATH_CODE": "/tmp",
+        "PATH_CODE": path_code,
         # clim/threshold intentionally absent — tests check behavior
     }
+
+
+def _load_compute_plasim_scores_module():
+    spec = importlib.util.spec_from_file_location(
+        "compute_plasim_scores_under_test", _COMPUTE_PLASIM_SCORES_PY,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class TestHeatwaveHelpers:
+    def test_resolve_nc_file_always_uses_plasim_out_when_both_exist(self, tmp_path):
+        module = _load_compute_plasim_scores_module()
+        output_dir = tmp_path / "step_7" / "particle_0" / "output"
+        output_dir.mkdir(parents=True)
+
+        plasim_out = output_dir / "plasim_out.step_7.particle_0.nc"
+        panguplasim_in = output_dir / "panguplasim_in.step_7.particle_0.nc"
+        plasim_out.write_text("plasim truth")
+        panguplasim_in.write_text("postprocessed input")
+
+        resolved = module.resolve_nc_file(tmp_path, 7, 0)
+
+        assert resolved == plasim_out
 
 
 # ===========================================================================
@@ -81,7 +126,7 @@ class TestScorerRequired:
     """compute_plasim_scores.py must exit(1) when 'scorer' is missing."""
 
     def test_missing_scorer_exits_with_error(self, tmp_path):
-        config = _base_config()
+        config = _base_config(tmp_path)
         # NOTE: no 'scorer' key
 
         result = _run_script(tmp_path, config)
@@ -104,7 +149,7 @@ class TestScorerNameRequired:
     """compute_plasim_scores.py must exit(1) when scorer has no 'name'."""
 
     def test_missing_scorer_name_exits_with_error(self, tmp_path):
-        config = _base_config()
+        config = _base_config(tmp_path)
         config["scorer"] = {
             "variable": "z500",
             "params": {},
@@ -130,7 +175,7 @@ class TestScorerVariableRequired:
     """compute_plasim_scores.py must exit(1) when scorer has no 'variable'."""
 
     def test_missing_scorer_variable_exits_with_error(self, tmp_path):
-        config = _base_config()
+        config = _base_config(tmp_path)
         config["scorer"] = {
             "name": "ANOScorer",
             "params": {},
@@ -157,7 +202,8 @@ class TestNonAnomalyScorerSkipsClim:
 
     def test_heatwave_scorer_does_not_require_clim(self, tmp_path):
         """HeatwaveMeanScorer should not exit(1) due to missing clim_file."""
-        config = _base_config()
+        config = _base_config(tmp_path)
+        config["region"] = "France"  # HeatwaveMeanScorer requires France or Chicago
         config["scorer"] = {
             "name": "HeatwaveMeanScorer",
             "variable": "tas",
@@ -186,7 +232,7 @@ class TestAnomalyScorerRequiresClim:
     """Anomaly-based scorers must fail if clim/threshold are missing."""
 
     def test_ano_scorer_requires_clim(self, tmp_path):
-        config = _base_config()
+        config = _base_config(tmp_path)
         config["scorer"] = {
             "name": "ANOScorer",
             "variable": "z500",
@@ -214,7 +260,8 @@ class TestScorerJsonString:
     """When scorer config is a JSON string (not dict), it should be parsed."""
 
     def test_scorer_json_string_parsed(self, tmp_path):
-        config = _base_config()
+        config = _base_config(tmp_path)
+        config["region"] = "France"  # HeatwaveMeanScorer requires France or Chicago
         config["scorer"] = json.dumps({
             "name": "HeatwaveMeanScorer",
             "variable": "tas",
