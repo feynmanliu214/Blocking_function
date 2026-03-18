@@ -70,6 +70,9 @@ from .aggregation import (
     rank_ensemble_scores,
 )
 
+# Context and builder
+from .context import ScorerContext, build_scorer_context
+
 # ---------------------------------------------------------------------------
 # Scorer Registry for RES experiments
 # ---------------------------------------------------------------------------
@@ -240,7 +243,9 @@ def compute_res_score(
         Event information dict containing 'event_mask' and/or 'blocked_mask'.
         Not used by GridpointPersistenceScorer or HeatwaveMeanScorer.
     region_bounds : dict
-        Region bounds with keys 'lon_min', 'lon_max', 'lat_min', 'lat_max'.
+        Region selector. For heatwave scoring this can be explicit point lists
+        ``{'lon': [...], 'lat': [...]}``; other scorers use bounds with keys
+        'lon_min', 'lon_max', 'lat_min', 'lat_max'.
     onset_time_idx : int, optional
         Time index of blocking onset. Required for onset mode and
         GridpointPersistenceScorer if not already in scorer_params.
@@ -258,7 +263,7 @@ def compute_res_score(
         For ANOScorer auto mode this is the max P_total across events.
         For GridpointPersistenceScorer this is mean blocked percentage (0-100).
         For GridpointIntensityScorer this is max moving-average intensity.
-        For HeatwaveMeanScorer this is mean temperature in Kelvin.
+        For HeatwaveMeanScorer this is mean temperature in Celsius.
 
     Example
     -------
@@ -279,7 +284,11 @@ def compute_res_score(
     if scorer_cls is not None and not getattr(scorer_cls, 'requires_anomaly', True):
         if field_data is None:
             raise ValueError(f"{scorer_name} requires field_data")
-        scorer = scorer_cls(**scorer_params)
+        scorer_init_params = dict(scorer_params)
+        if scorer_name == "HeatwaveMeanScorer":
+            scorer_init_params.pop("lead_time", None)
+            scorer_init_params.pop("onset_time_idx", None)
+        scorer = scorer_cls(**scorer_init_params)
         return scorer.compute_score_from_field(
             field_data=field_data,
             onset_time_idx=onset_time_idx,
@@ -534,4 +543,7 @@ __all__ = [
     "scorer_required_variable",
     "validate_scorer_region",
     "validate_scorer_variable",
+    # Context
+    "ScorerContext",
+    "build_scorer_context",
 ]
