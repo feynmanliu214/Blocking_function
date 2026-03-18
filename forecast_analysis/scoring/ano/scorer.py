@@ -565,6 +565,29 @@ class ANOScorer(BlockingScorer):
         else:
             return "B_total" if self.use_drift_penalty else "B_int"
 
+    def score_from_anomaly(self, z500_anom, event_info, region_bounds,
+                           onset_time_idx, threshold_90=None, scorer_params=None):
+        """Produce scalar score from anomaly + event_info."""
+        import xarray as xr
+
+        event_info_copy = dict(event_info)
+        event_info_copy["z500_anom"] = z500_anom
+
+        if "blocked_mask" not in event_info_copy:
+            event_mask = event_info.get("event_mask")
+            if event_mask is not None:
+                bm = (event_mask > 0).astype(float)
+                event_info_copy["blocked_mask"] = xr.DataArray(
+                    bm, dims=["time", "lat", "lon"],
+                    coords={"time": z500_anom.time, "lat": z500_anom.lat, "lon": z500_anom.lon},
+                )
+
+        df = self.compute_event_scores(z500=z500_anom, event_info=event_info_copy)
+        if len(df) == 0:
+            return 0.0
+        primary_col = self.get_primary_score_column()
+        return float(df[primary_col].max())
+
 
 # ---------------------------------------------------------------------------
 # Convenience functions

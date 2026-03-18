@@ -20,7 +20,7 @@ Author: AI-RES Project
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import xarray as xr
@@ -131,6 +131,33 @@ class BlockingScorer(ABC):
             Name of the primary score column.
         """
         return "score"
+
+    def score_from_anomaly(
+        self,
+        z500_anom: "xr.DataArray",
+        event_info: dict,
+        region_bounds: dict,
+        onset_time_idx: int,
+        threshold_90: Optional[dict] = None,
+        scorer_params: Optional[dict] = None,
+    ) -> float:
+        """Compute scalar score from a pre-computed anomaly field.
+
+        scorer_params carries config-defined values that are NOT stored as
+        scorer object attributes (e.g. n_days/duration_days for gridpoint
+        scorers, fallback_to_nonblocked for GridpointIntensityScorer).
+        These must be passed through explicitly because the scorer constructors
+        store only their own init-time parameters (e.g. min_persistence).
+
+        Default: raises NotImplementedError.  Anomaly-path scorers must
+        override this.  Non-anomaly scorers (HeatwaveMeanScorer) do not
+        override it — score_single_member routes them to
+        compute_score_from_field() instead.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement score_from_anomaly(). "
+            "Use compute_score_from_field() for non-anomaly scorers."
+        )
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name='{self.name}')"
