@@ -240,8 +240,6 @@ def load_scores_from_plasim(
     clim_file: Path,
     threshold_json_file: Path,
 ) -> np.ndarray:
-    ensure_project_import_paths()
-
     import xarray as xr
     from forecast_analysis.data_loading import load_climatology_and_thresholds
     from forecast_analysis.scoring import scorer_required_variable
@@ -320,6 +318,7 @@ def load_scores_from_plasim(
     scores: List[float] = []
     total = len(nc_files)
     print(f"Computing PlaSim trajectory scores for {total} particles at step K={K}...")
+    # nc_files already validated to match particle_indices length (guard above raises on any missing)
     for i, (_particle_idx, nc_path) in enumerate(zip(particle_indices, nc_files), start=1):
         with xr.open_dataset(str(nc_path)) as ds:
             field = extract_variable(ds, ctx.variable)
@@ -758,6 +757,7 @@ def plot_return_curve(
                             "visualization."
                         )
                     else:
+                        # no tail_threshold_rp: subset curve return periods are shorter and don't need tail splitting
                         _plot_dns_curve(
                             ax, subset_x_plot, subset_y_plot,
                             is_step=subset_is_step,
