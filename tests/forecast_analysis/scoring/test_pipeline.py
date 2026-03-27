@@ -58,6 +58,28 @@ def _make_z500_dataset(var_name="zg", with_plev=True):
     return xr.Dataset({var_name: da})
 
 
+def _make_z500_dataset_with_lev(var_name="zg"):
+    """Build a PlaSim-like Dataset with a ``lev`` pressure coordinate in hPa."""
+    n_time, n_lat, n_lon = 8, 5, 10
+    rng = np.random.RandomState(123)
+    base = rng.randn(n_time, n_lat, n_lon) * 50 + 5500
+    lev = np.array([500.0, 850.0, 250.0])
+    data = np.stack([base, base + 100, base + 200], axis=1)
+
+    da = xr.DataArray(
+        data,
+        dims=["time", "lev", "lat", "lon"],
+        coords={
+            "time": np.arange(n_time),
+            "lev": lev,
+            "lat": np.linspace(20, 80, n_lat),
+            "lon": np.linspace(0, 350, n_lon),
+        },
+        name=var_name,
+    )
+    return xr.Dataset({var_name: da})
+
+
 def _make_tas_dataset(var_name="tas"):
     """Build a minimal Dataset containing a temperature variable."""
     n_time, n_lat, n_lon = 10, 4, 6
@@ -107,6 +129,16 @@ class TestExtractVariableZ500:
         result = extract_variable(ds, "z500")
 
         assert "plev" not in result.dims
+
+    def test_extracts_zg_with_lev_selection(self):
+        """PlaSim outputs use ``lev`` instead of ``plev`` and must still yield 3D z500."""
+        ds = _make_z500_dataset_with_lev(var_name="zg")
+        result = extract_variable(ds, "z500")
+
+        assert isinstance(result, xr.DataArray)
+        assert "lev" not in result.dims
+        assert result.dims == ("time", "lat", "lon")
+        assert result.name == "z500"
 
     def test_missing_z500_variable_raises(self):
         ds = xr.Dataset({"temperature": xr.DataArray([1, 2, 3])})
@@ -527,3 +559,311 @@ class TestScoreSingleMemberNullGuards:
                     z500_clim=xr.DataArray([0]),  # non-None so we pass the first guard
                     threshold_90=None,
                 )
+
+
+# ===========================================================================
+# Dispatch coverage: one test per scorer type via build_scorer_context +
+# score_single_member (replaces deleted test_compute_res_score_dispatch.py)
+# ===========================================================================
+
+from pathlib import Path as _Path
+
+# Path to regions.json (tests file is at tests/forecast_analysis/scoring/ →
+# parents[3] = project root)
+_REGIONS_JSON = _Path(__file__).resolve().parents[3] / "AI-RES" / "RES" / "regions.json"
+_REGION_Z500 = "NorthAtlantic"   # ANOScorer, Gridpoint*, and legacy aliases
+_REGION_TAS  = "France"          # HeatwaveMeanScorer
+
+
+def _make_z500_field_daily(n_time=15, n_lat=10, n_lon=20, seed=1):
+    """Synthetic daily z500 DataArray spanning a North-Atlantic-ish region."""
+    rng = np.random.RandomState(seed)
+    return xr.DataArray(
+        rng.randn(n_time, n_lat, n_lon) * 50 + 5500,
+        dims=["time", "lat", "lon"],
+        coords={
+            "time": np.arange(n_time),
+            "lat": np.linspace(30, 80, n_lat),
+            "lon": np.linspace(-20, 40, n_lon),
+        },
+        name="z500",
+    )
+
+
+def _make_tas_field_daily(n_time=10, n_lat=5, n_lon=8, seed=2):
+    """Synthetic daily near-surface temperature DataArray."""
+    rng = np.random.RandomState(seed)
+    return xr.DataArray(
+        rng.randn(n_time, n_lat, n_lon) * 5 + 295.0,
+        dims=["time", "lat", "lon"],
+        coords={
+            "time": np.arange(n_time),
+            "lat": np.linspace(42, 52, n_lat),
+            "lon": np.linspace(-5, 10, n_lon),
+        },
+        name="tas",
+    )
+
+
+def _dummy_z500_clim(field_daily):
+    """Return a zero-valued climatology DataArray matching field_daily."""
+    return xr.zeros_like(field_daily)
+
+
+def _dummy_threshold_90():
+    """Monthly thresholds dict (all months, one shared value)."""
+    return {m: 50.0 for m in range(1, 13)}
+
+
+# ---------------------------------------------------------------------------
+# Helper: build ScorerContext from scorer_json using build_scorer_context()
+# ---------------------------------------------------------------------------
+
+def _build_ctx(scorer_json, region=_REGION_Z500, regions_json=_REGIONS_JSON, onset_time_idx=None):
+    from forecast_analysis.scoring.context import build_scorer_context
+    return build_scorer_context(
+        scorer_json=scorer_json,
+        region=region,
+        regions_json=regions_json,
+        onset_time_idx=onset_time_idx,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Canonical scorer types
+# ---------------------------------------------------------------------------
+
+class TestDispatchANOScorer:
+    """ANOScorer dispatches correctly via score_single_member."""
+
+    def test_returns_float(self):
+        scorer_json = {"name": "ANOScorer", "variable": "z500"}
+        ctx = _build_ctx(scorer_json, onset_time_idx=2)
+        field_daily = _make_z500_field_daily()
+        z500_clim = _dummy_z500_clim(field_daily)
+        threshold_90 = _dummy_threshold_90()
+
+        fake_anom = field_daily.copy()
+        expected = 3.14
+
+        fake_blocked = xr.zeros_like(field_daily)
+        fake_event_info = {"blocked_mask": fake_blocked}
+
+        with (
+            mock.patch(
+                "forecast_analysis.data_loading.compute_anomalies_with_climatology",
+                return_value=fake_anom,
+            ),
+            mock.patch.dict("sys.modules", {"ANO_PlaSim": mock.MagicMock()}),
+            mock.patch.object(ctx.scorer, "score_from_anomaly", return_value=expected),
+        ):
+            import sys as _sys
+            ano_mock = _sys.modules["ANO_PlaSim"]
+            ano_mock.create_blocking_mask_fast.return_value = fake_blocked
+            ano_mock.identify_blocking_events.return_value = (None, fake_event_info)
+
+            score = score_single_member(
+                field_daily=field_daily,
+                ctx=ctx,
+                z500_clim=z500_clim,
+                threshold_90=threshold_90,
+            )
+
+        assert isinstance(score, float)
+        assert score == expected
+
+
+class TestDispatchGridpointPersistenceScorer:
+    """GridpointPersistenceScorer dispatches correctly via score_single_member."""
+
+    def test_returns_float(self):
+        scorer_json = {"name": "GridpointPersistenceScorer", "variable": "z500"}
+        ctx = _build_ctx(scorer_json, onset_time_idx=3)
+        field_daily = _make_z500_field_daily()
+        z500_clim = _dummy_z500_clim(field_daily)
+        threshold_90 = _dummy_threshold_90()
+
+        fake_anom = field_daily.copy()
+        expected = 55.0
+
+        fake_blocked = xr.zeros_like(field_daily)
+        fake_event_info = {"blocked_mask": fake_blocked}
+
+        with (
+            mock.patch(
+                "forecast_analysis.data_loading.compute_anomalies_with_climatology",
+                return_value=fake_anom,
+            ),
+            mock.patch.dict("sys.modules", {"ANO_PlaSim": mock.MagicMock()}),
+            mock.patch.object(ctx.scorer, "score_from_anomaly", return_value=expected),
+        ):
+            import sys as _sys
+            ano_mock = _sys.modules["ANO_PlaSim"]
+            ano_mock.create_blocking_mask_fast.return_value = fake_blocked
+            ano_mock.identify_blocking_events.return_value = (None, fake_event_info)
+
+            score = score_single_member(
+                field_daily=field_daily,
+                ctx=ctx,
+                z500_clim=z500_clim,
+                threshold_90=threshold_90,
+            )
+
+        assert isinstance(score, float)
+        assert score == expected
+
+
+class TestDispatchGridpointIntensityScorer:
+    """GridpointIntensityScorer dispatches correctly via score_single_member."""
+
+    def test_returns_float(self):
+        scorer_json = {"name": "GridpointIntensityScorer", "variable": "z500"}
+        ctx = _build_ctx(scorer_json, onset_time_idx=3)
+        field_daily = _make_z500_field_daily()
+        z500_clim = _dummy_z500_clim(field_daily)
+        threshold_90 = _dummy_threshold_90()
+
+        fake_anom = field_daily.copy()
+        expected = 72.5
+
+        fake_blocked = xr.zeros_like(field_daily)
+        fake_event_info = {"blocked_mask": fake_blocked}
+
+        with (
+            mock.patch(
+                "forecast_analysis.data_loading.compute_anomalies_with_climatology",
+                return_value=fake_anom,
+            ),
+            mock.patch.dict("sys.modules", {"ANO_PlaSim": mock.MagicMock()}),
+            mock.patch.object(ctx.scorer, "score_from_anomaly", return_value=expected),
+        ):
+            import sys as _sys
+            ano_mock = _sys.modules["ANO_PlaSim"]
+            ano_mock.create_blocking_mask_fast.return_value = fake_blocked
+            ano_mock.identify_blocking_events.return_value = (None, fake_event_info)
+
+            score = score_single_member(
+                field_daily=field_daily,
+                ctx=ctx,
+                z500_clim=z500_clim,
+                threshold_90=threshold_90,
+            )
+
+        assert isinstance(score, float)
+        assert score == expected
+
+
+class TestDispatchHeatwaveMeanScorer:
+    """HeatwaveMeanScorer dispatches to the raw-field path via score_single_member."""
+
+    def test_returns_float(self):
+        scorer_json = {"name": "HeatwaveMeanScorer", "variable": "tas"}
+        ctx = _build_ctx(scorer_json, region=_REGION_TAS, onset_time_idx=0)
+        field_daily = _make_tas_field_daily()
+        expected = 28.5  # degrees Celsius
+
+        with mock.patch.object(ctx.scorer, "compute_score_from_field", return_value=expected):
+            score = score_single_member(
+                field_daily=field_daily,
+                ctx=ctx,
+                # z500_clim and threshold_90 intentionally omitted
+            )
+
+        assert isinstance(score, float)
+        assert score == expected
+
+
+# ---------------------------------------------------------------------------
+# Legacy alias scorer names
+# ---------------------------------------------------------------------------
+
+class TestDispatchLegacyIntegratedScorer:
+    """IntegratedScorer (alias → ANOScorer) dispatches correctly."""
+
+    def test_returns_float(self):
+        scorer_json = {"name": "IntegratedScorer", "variable": "z500"}
+        ctx = _build_ctx(scorer_json, onset_time_idx=2)
+        field_daily = _make_z500_field_daily()
+        z500_clim = _dummy_z500_clim(field_daily)
+        threshold_90 = _dummy_threshold_90()
+
+        fake_anom = field_daily.copy()
+        expected = 9.9
+
+        fake_blocked = xr.zeros_like(field_daily)
+        fake_event_info = {"blocked_mask": fake_blocked}
+
+        with (
+            mock.patch(
+                "forecast_analysis.data_loading.compute_anomalies_with_climatology",
+                return_value=fake_anom,
+            ),
+            mock.patch.dict("sys.modules", {"ANO_PlaSim": mock.MagicMock()}),
+            mock.patch.object(ctx.scorer, "score_from_anomaly", return_value=expected),
+        ):
+            import sys as _sys
+            ano_mock = _sys.modules["ANO_PlaSim"]
+            ano_mock.create_blocking_mask_fast.return_value = fake_blocked
+            ano_mock.identify_blocking_events.return_value = (None, fake_event_info)
+
+            score = score_single_member(
+                field_daily=field_daily,
+                ctx=ctx,
+                z500_clim=z500_clim,
+                threshold_90=threshold_90,
+            )
+
+        assert isinstance(score, float)
+        assert score == expected
+
+
+class TestDispatchLegacyDriftPenalizedScorer:
+    """DriftPenalizedScorer (alias → ANOScorer) dispatches correctly."""
+
+    def test_returns_float(self):
+        scorer_json = {"name": "DriftPenalizedScorer", "variable": "z500"}
+        ctx = _build_ctx(scorer_json, onset_time_idx=2)
+        field_daily = _make_z500_field_daily()
+        z500_clim = _dummy_z500_clim(field_daily)
+        threshold_90 = _dummy_threshold_90()
+
+        fake_anom = field_daily.copy()
+        expected = 1.23
+
+        fake_blocked = xr.zeros_like(field_daily)
+        fake_event_info = {"blocked_mask": fake_blocked}
+
+        with (
+            mock.patch(
+                "forecast_analysis.data_loading.compute_anomalies_with_climatology",
+                return_value=fake_anom,
+            ),
+            mock.patch.dict("sys.modules", {"ANO_PlaSim": mock.MagicMock()}),
+            mock.patch.object(ctx.scorer, "score_from_anomaly", return_value=expected),
+        ):
+            import sys as _sys
+            ano_mock = _sys.modules["ANO_PlaSim"]
+            ano_mock.create_blocking_mask_fast.return_value = fake_blocked
+            ano_mock.identify_blocking_events.return_value = (None, fake_event_info)
+
+            score = score_single_member(
+                field_daily=field_daily,
+                ctx=ctx,
+                z500_clim=z500_clim,
+                threshold_90=threshold_90,
+            )
+
+        assert isinstance(score, float)
+        assert score == expected
+
+
+# ---------------------------------------------------------------------------
+# ImportError guard: compute_res_score must no longer be importable
+# ---------------------------------------------------------------------------
+
+class TestComputeResScoreDeleted:
+    """Verify that compute_res_score has been deleted from the scoring package."""
+
+    def test_import_raises_import_error(self):
+        with pytest.raises(ImportError):
+            from forecast_analysis.scoring import compute_res_score  # noqa: F401

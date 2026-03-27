@@ -99,8 +99,6 @@ from .scoring import (
     compute_member_scores,
     rank_ensemble_scores,
     REGION_BOUNDS,
-    get_scorer,
-    compute_res_score,
 )
 
 __all__ = [
@@ -140,8 +138,6 @@ __all__ = [
     "compute_member_scores",
     "rank_ensemble_scores",
     "REGION_BOUNDS",
-    "get_scorer",
-    "compute_res_score",
 ]
 
 __version__ = "1.0.0"
