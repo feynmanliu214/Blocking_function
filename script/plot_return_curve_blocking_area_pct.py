@@ -3,7 +3,7 @@
 Return Period Curve for AI-RES outputs.
 
 This script computes y-axis scores from PlaSim (physics-model) trajectories at
-`step_{K}/particle_{i}/output/panguplasim_in.step_{K}.particle_{i}.nc`
+`step_{K}/particle_{i}/output/plasim_out.step_{K}.particle_{i}.nc`
 using the experiment's scorer configuration.
 
 When the confirmed scorer is GridpointIntensityScorer, DNS ground-truth curves
@@ -25,6 +25,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
+# Ensure project root and src/ are on sys.path before local imports.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_SRC_DIR = _PROJECT_ROOT / "src"
+for _p in (_PROJECT_ROOT, _SRC_DIR):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
 from forecast_analysis.scoring.detection import (
     SCORER_CHOICES,
     detect_scorer_from_experiment,
@@ -40,6 +47,7 @@ from src.return_curve import (
     format_region_label,
     get_particle_indices_for_step,
     get_product_of_weights,
+    resolve_return_curve_y_limits,
     setup_publication_style,
     restore_style,
     CLR_AIRES,
@@ -65,9 +73,9 @@ DEFAULT_SHOW_GROUND_TRUTH = True
 DEFAULT_DNS_GROUND_TRUTH_WINDOW = "12-24_to_12-30"
 DEFAULT_PLOT_STYLE_SCALE = 2.5
 DEFAULT_REGIONS_JSON = (
-    Path(__file__).resolve().parents[1] / "AI-RES" / "RES" / "regions.json"
+    _PROJECT_ROOT / "AI-RES" / "RES" / "regions.json"
 )
-DEFAULT_GROUND_TRUTH_DIR = Path(__file__).resolve().parents[1] / "data" / "return_curve_ground_truth"
+DEFAULT_GROUND_TRUTH_DIR = _PROJECT_ROOT / "data" / "return_curve_ground_truth"
 GROUND_TRUTH_12_24_TO_12_30_FULL_RETRY2 = (
     "return_curve_block_maxima_always_12-24_to_12-30_retry2.npz"
 )
@@ -83,7 +91,7 @@ GROUND_TRUTH_12_24_TO_12_30_SUBSET_LEGACY = (
 GROUND_TRUTH_WINDOW_CHOICES = ["djf", "12-24_to_12-30"]
 DEFAULT_PDF_OVERLAY = True
 DEFAULT_PDF_FILE = (
-    Path(__file__).resolve().parents[1]
+    _PROJECT_ROOT
     / "outputs"
     / "plasim"
     / "sim52"
@@ -176,12 +184,10 @@ def load_baseline_pdf(pdf_file: Path) -> Dict[str, np.ndarray]:
 
 
 def ensure_project_import_paths() -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    src_dir = project_root / "src"
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-    if str(src_dir) not in sys.path:
-        sys.path.insert(0, str(src_dir))
+    if str(_PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_ROOT))
+    if str(_SRC_DIR) not in sys.path:
+        sys.path.insert(0, str(_SRC_DIR))
 
 
 
@@ -220,7 +226,7 @@ def load_region_bounds(region: str, regions_json_path: Path = DEFAULT_REGIONS_JS
 
 def resolve_plasim_step_file(exp_path: Path, K: int, particle_idx: int) -> Path:
     return exp_path / f"step_{K}" / f"particle_{particle_idx}" / "output" / (
-        f"panguplasim_in.step_{K}.particle_{particle_idx}.nc"
+        f"plasim_out.step_{K}.particle_{particle_idx}.nc"
     )
 
 
@@ -236,13 +242,22 @@ def load_scores_from_plasim(
 ) -> np.ndarray:
     ensure_project_import_paths()
 
-    from ANO_PlaSim import create_blocking_mask_fast, identify_blocking_events
-    from forecast_analysis.data_loading import (
-        compute_anomalies_with_climatology,
-        extract_z500_daily,
-        load_climatology_and_thresholds,
+    import xarray as xr
+    from forecast_analysis.data_loading import load_climatology_and_thresholds
+    from forecast_analysis.scoring import scorer_required_variable
+    from forecast_analysis.scoring.context import build_scorer_context
+    from forecast_analysis.scoring.pipeline import (
+        extract_variable,
+        prepare_daily_field,
+        score_single_member,
     )
-    from forecast_analysis.scoring import compute_res_score
+
+    if scorer_name == "RMSEScorer":
+        raise ValueError(
+            "RMSEScorer is an analysis-only scorer and cannot be used for "
+            "PlaSim trajectory rescoring. Provide pre-computed scores at "
+            f"{exp_path}/resampling/plasim_scores_step_{K}.npy instead."
+        )
 
     scorer_params_eff, policy_note = enforce_plasim_score_policy(
         scorer_name=scorer_name, scorer_params=scorer_params
@@ -250,12 +265,18 @@ def load_scores_from_plasim(
     if policy_note:
         print(policy_note)
 
-    if not clim_file.exists():
-        raise FileNotFoundError(f"Missing climatology file required for PlaSim scoring: {clim_file}")
-    if not threshold_json_file.exists():
-        raise FileNotFoundError(
-            f"Missing threshold file required for PlaSim scoring: {threshold_json_file}"
-        )
+    # Build scorer context once (validates scorer before loading any files)
+    scorer_json = {
+        "name": scorer_name,
+        "variable": scorer_required_variable(scorer_name),
+        "params": dict(scorer_params_eff),
+    }
+    ctx = build_scorer_context(
+        scorer_json=scorer_json,
+        region=region,
+        regions_json=DEFAULT_REGIONS_JSON,
+        onset_time_idx=None,  # let build_scorer_context derive from params
+    )
 
     missing_files = []
     nc_files: List[Path] = []
@@ -274,39 +295,36 @@ def load_scores_from_plasim(
         raise FileNotFoundError(
             "PlaSim scoring requires one trajectory file per particle at final step K.\n"
             f"Missing {len(missing_files)} files. Examples:\n{preview}{more}\n"
-            "Expected pattern: step_K/particle_i/output/panguplasim_in.step_K.particle_i.nc"
+            "Expected pattern: step_K/particle_i/output/plasim_out.step_K.particle_i.nc\n"
+            "Return-curve plotting does not fall back to panguplasim_in files."
         )
 
-    print(f"Loading climatology: {clim_file}")
-    print(f"Loading thresholds: {threshold_json_file}")
-    z500_clim, threshold_90 = load_climatology_and_thresholds(
-        str(clim_file),
-        str(threshold_json_file),
-    )
-    region_bounds = load_region_bounds(region)
-    onset_time_idx = int(scorer_params_eff.get("onset_time_idx", 0) or 0)
+    # Load clim/thresholds only if needed
+    z500_clim, threshold_90 = None, None
+    if ctx.scorer.requires_anomaly:
+        if not clim_file.exists():
+            raise FileNotFoundError(
+                f"Missing climatology file required for PlaSim scoring: {clim_file}"
+            )
+        if not threshold_json_file.exists():
+            raise FileNotFoundError(
+                f"Missing threshold file required for PlaSim scoring: {threshold_json_file}"
+            )
+        print(f"Loading climatology: {clim_file}")
+        print(f"Loading thresholds: {threshold_json_file}")
+        z500_clim, threshold_90 = load_climatology_and_thresholds(
+            str(clim_file),
+            str(threshold_json_file),
+        )
 
     scores: List[float] = []
     total = len(nc_files)
     print(f"Computing PlaSim trajectory scores for {total} particles at step K={K}...")
     for i, (_particle_idx, nc_path) in enumerate(zip(particle_indices, nc_files), start=1):
-        z500_daily = extract_z500_daily(
-            str(nc_path),
-            full_simulation=True,
-            northern_hemisphere_only=True,
-        )
-        z500_anom = compute_anomalies_with_climatology(z500_daily, z500_clim)
-        blocked_mask = create_blocking_mask_fast(z500_anom, threshold_90)
-        _, event_info = identify_blocking_events(blocked_mask)
-        score = compute_res_score(
-            scorer_name=scorer_name,
-            scorer_params=dict(scorer_params_eff),
-            z500_anom=z500_anom,
-            event_info=event_info,
-            region_bounds=region_bounds,
-            onset_time_idx=onset_time_idx,
-            threshold_90=threshold_90,
-        )
+        with xr.open_dataset(str(nc_path)) as ds:
+            field = extract_variable(ds, ctx.variable)
+            field_daily = prepare_daily_field(field, filter_nh=(ctx.variable == "z500"))
+            score = score_single_member(field_daily, ctx, z500_clim, threshold_90)
         scores.append(float(score))
         if i == 1 or i % 25 == 0 or i == total:
             print(f"  scored {i}/{total} particles")
@@ -431,41 +449,79 @@ def _plot_dns_curve(
     markersize: float = 5.2,
     markevery: Optional[int] = None,
     zorder: int = 3,
+    tail_threshold_rp: Optional[float] = None,
 ) -> None:
-    """Plot a DNS ground-truth curve, choosing between step and line rendering."""
-    marker_kw: Dict[str, Any] = {}
-    if marker is not None:
-        marker_kw = dict(
-            marker=marker,
-            markersize=markersize,
-            markevery=markevery if markevery else max(1, len(x_plot) // 80),
-            markerfacecolor=color,
-            markeredgecolor="white",
-            markeredgewidth=0.3,
-        )
+    """Plot a DNS ground-truth curve, choosing between step and line rendering.
 
-    if is_step:
-        ax.step(
-            x_plot, y_plot,
-            where="post",
-            color=color,
-            linewidth=linewidth,
-            alpha=alpha,
-            label=label,
-            linestyle=linestyle,
-            zorder=zorder,
-            **marker_kw,
-        )
+    When *tail_threshold_rp* is set, points with return period above the
+    threshold are rendered as discrete dots instead of a continuous line.
+    """
+    xp = np.asarray(x_plot, dtype=float).reshape(-1)
+    yp = np.asarray(y_plot, dtype=float).reshape(-1)
+
+    if tail_threshold_rp is not None:
+        line_mask = xp < tail_threshold_rp
+        tail_mask = ~line_mask
     else:
-        ax.plot(
-            x_plot, y_plot,
-            linestyle=linestyle,
-            color=color,
-            linewidth=linewidth,
+        line_mask = np.ones(xp.size, dtype=bool)
+        tail_mask = np.zeros(xp.size, dtype=bool)
+
+    has_tail = bool(np.any(tail_mask))
+
+    if np.any(line_mask):
+        effective_label = label
+        if has_tail:
+            effective_label = (
+                f"{label}\n(dots: RP $\\geq$ {tail_threshold_rp:,.0f} yr)"
+            )
+        marker_kw: Dict[str, Any] = {}
+        if marker is not None:
+            n_line = int(np.count_nonzero(line_mask))
+            marker_kw = dict(
+                marker=marker,
+                markersize=markersize,
+                markevery=markevery if markevery else max(1, n_line // 80),
+                markerfacecolor=color,
+                markeredgecolor="white",
+                markeredgewidth=0.3,
+            )
+
+        if is_step:
+            ax.step(
+                xp[line_mask], yp[line_mask],
+                where="post",
+                color=color,
+                linewidth=linewidth,
+                alpha=alpha,
+                label=effective_label,
+                linestyle=linestyle,
+                zorder=zorder,
+                **marker_kw,
+            )
+        else:
+            ax.plot(
+                xp[line_mask], yp[line_mask],
+                linestyle=linestyle,
+                color=color,
+                linewidth=linewidth,
+                alpha=alpha,
+                label=effective_label,
+                zorder=zorder,
+                **marker_kw,
+            )
+
+    if has_tail:
+        tail_label = label if not np.any(line_mask) else "_nolegend_"
+        ax.scatter(
+            xp[tail_mask], yp[tail_mask],
+            s=22,
+            c=color,
+            marker="o",
             alpha=alpha,
-            label=label,
+            edgecolors="white",
+            linewidths=0.3,
             zorder=zorder,
-            **marker_kw,
+            label=tail_label,
         )
 
 
@@ -486,6 +542,8 @@ def plot_return_curve(
     ground_truth_full_file: Optional[Path] = None,
     ground_truth_subset_file: Optional[Path] = None,
     cap_rp_lower_at_tenth: bool = DEFAULT_CAP_RP_LOWER_AT_TENTH,
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
     show_pdf_overlay: bool = DEFAULT_PDF_OVERLAY,
     pdf_file: Optional[Path] = None,
     save_fig: bool = True,
@@ -526,7 +584,7 @@ def plot_return_curve(
     else:
         print(
             f"No saved PlaSim scores at {saved_path}; "
-            "recomputing from .nc files..."
+            "recomputing from plasim_out .nc files..."
         )
         scores = load_scores_from_plasim(
             exp_path=exp_path,
@@ -658,6 +716,7 @@ def plot_return_curve(
                         label=f"Full ensemble ({n_seasons:,} seasons)",
                         color=CLR_FULL,
                         zorder=3,
+                        tail_threshold_rp=5e3,
                     )
 
                 subset_al = subset_rp = None
@@ -841,24 +900,26 @@ def plot_return_curve(
         x_upper = x_lower * 10.0
     ax.set_xlim(x_lower, x_upper)
 
-    if scorer_profile["score_key"] == "blocking_area_pct":
-        ax.set_ylim(0, 100)
-    else:
-        y_series = [rv_exp]
-        if ground_truth_curve is not None:
-            y_series.append(ground_truth_curve["full_al_values"])
-            subset_al = ground_truth_curve["subset_al"]
-            if subset_al is not None:
-                y_series.append(subset_al)
-        y_min = min(float(np.min(v)) for v in y_series)
-        y_max = max(float(np.max(v)) for v in y_series)
-        if y_min == y_max:
-            pad = max(1.0, abs(y_min) * 0.1)
-        else:
-            pad = 0.05 * (y_max - y_min)
-        ax.set_ylim(y_min - pad, y_max + pad)
-        if dns_block_maxima_visualization_used:
-            ax.set_ylim(bottom=0.0)
+    y_series = [rv_exp]
+    if ground_truth_curve is not None:
+        y_series.append(ground_truth_curve["full_al_values"])
+        subset_al = ground_truth_curve["subset_al"]
+        if subset_al is not None:
+            y_series.append(subset_al)
+    baseline_y_lim = (
+        (0.0, 100.0) if scorer_profile["score_key"] == "blocking_area_pct" else None
+    )
+    resolved_y_lim = resolve_return_curve_y_limits(
+        score_arrays=y_series,
+        y_lim=baseline_y_lim,
+        y_min=y_min,
+        y_max=y_max,
+    )
+    if resolved_y_lim is not None:
+        lower, upper = resolved_y_lim
+        if dns_block_maxima_visualization_used and y_min is None:
+            lower = max(0.0, lower)
+        ax.set_ylim(lower, upper)
 
     # --- Legend ---
     legend = ax.legend(
@@ -1014,6 +1075,18 @@ Examples:
         help="Disable lower x-axis cap and use the legacy lower bound (10^-2 years).",
     )
     parser.add_argument(
+        "--y-min",
+        type=float,
+        default=None,
+        help="Optional lower y-axis bound. Unspecified upper bound still auto-scales.",
+    )
+    parser.add_argument(
+        "--y-max",
+        type=float,
+        default=None,
+        help="Optional upper y-axis bound. Unspecified lower bound still auto-scales.",
+    )
+    parser.add_argument(
         "--pdf-overlay",
         dest="pdf_overlay",
         action="store_true",
@@ -1115,6 +1188,8 @@ Examples:
         ground_truth_full_file=ground_truth_full_file,
         ground_truth_subset_file=ground_truth_subset_file,
         cap_rp_lower_at_tenth=args.cap_rp_lower_at_tenth,
+        y_min=args.y_min,
+        y_max=args.y_max,
         show_pdf_overlay=args.pdf_overlay,
         pdf_file=Path(args.pdf_file),
         save_fig=True,
