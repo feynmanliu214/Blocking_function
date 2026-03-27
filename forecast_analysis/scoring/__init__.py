@@ -54,11 +54,7 @@ from .ano import (
     REGION_BOUNDS,
     # Utility functions
     compute_blocking_centroid,
-    compute_unweighted_centroid,
     compute_onset_centroid_from_event_info,
-    select_block_at_onset,
-    select_event_at_onset,
-    track_block_through_time,
     extract_3x3_patch,
 )
 
@@ -203,11 +199,7 @@ __all__ = [
     # Utilities
     "REGION_BOUNDS",
     "compute_blocking_centroid",
-    "compute_unweighted_centroid",
     "compute_onset_centroid_from_event_info",
-    "select_block_at_onset",
-    "select_event_at_onset",
-    "track_block_through_time",
     "extract_3x3_patch",
     # Aggregation
     "compute_member_scores",
