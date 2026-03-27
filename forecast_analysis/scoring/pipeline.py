@@ -108,8 +108,8 @@ def score_single_member(
     """Full scoring pipeline for one ensemble member.
 
     Uses ctx.scorer object directly for both anomaly and raw-field paths.
-    Does NOT call compute_res_score() — scorer dispatch is encapsulated
-    in the scorer class via score_from_anomaly() or compute_score_from_field().
+    Scorer dispatch is encapsulated in the scorer class via score_from_anomaly()
+    or compute_score_from_field().
 
     Parameters
     ----------
@@ -196,15 +196,16 @@ def _extract_z500(ds: xr.Dataset) -> xr.DataArray:
             f"Available variables: {list(ds.data_vars)}"
         )
 
-    # Select 500 hPa level if plev dimension exists
-    if "plev" in zg.dims:
-        p = np.asarray(ds["plev"].values, dtype=float)
+    # Select 500 hPa level for datasets that carry a vertical pressure dimension.
+    vertical_dim = next((name for name in ("plev", "lev") if name in zg.dims), None)
+    if vertical_dim is not None:
+        p = np.asarray(ds[vertical_dim].values, dtype=float)
         target_p = 50000.0 if p.max() > 10000 else 500.0
         if np.isclose(p, target_p).any():
-            zg = zg.sel(plev=target_p)
+            zg = zg.sel({vertical_dim: target_p})
         else:
             nearest_p = p[np.argmin(np.abs(p - target_p))]
-            zg = zg.sel(plev=nearest_p)
+            zg = zg.sel({vertical_dim: nearest_p})
 
     zg.name = "z500"
     return zg
