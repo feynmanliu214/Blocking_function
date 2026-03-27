@@ -68,6 +68,16 @@ def test_validate_function_checks_expected_length():
     assert "a.shape[0] != expected" in text
 
 
+def test_validate_function_has_missing_count_check():
+    text = _read_lib_forecast_script()
+    assert "missing_count" in text
+
+
+def test_validate_function_has_empty_count_check():
+    text = _read_lib_forecast_script()
+    assert "empty_count" in text
+
+
 ###############################################################################
 # Part 2: Python validation logic tests
 ###############################################################################
@@ -87,6 +97,8 @@ def _run_validation_python(
 
     Returns (passed, stderr_output).
     """
+    # Note: in the shell one-liner, step comes from sys.argv[5] as a string.
+    # Here we pass step as int; f-string coercion produces the same path strings.
     # Create the directory structure expected by the validation logic
     path_exp = tmp_path
     region = "TestRegion"
