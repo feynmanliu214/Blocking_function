@@ -20,7 +20,7 @@ Author: AI-RES Project
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import xarray as xr
@@ -45,11 +45,25 @@ class BlockingScorer(ABC):
         anomalies and can skip the computationally expensive blocking detection.
         Scorers like RMSEScorer that compare against truth at fixed locations
         set this to False.
+    requires_anomaly : bool
+        If True (default), the scorer operates on anomaly fields (e.g. Z500
+        anomalies). If False, the scorer works on raw variable fields (e.g.
+        raw surface temperature) and uses ``compute_score_from_field()``
+        instead of the event-based ``compute_event_scores()`` pathway.
+    required_variable : str
+        The climate variable this scorer expects (e.g. ``"z500"``, ``"tas"``).
+        Default ``"z500"`` for backward compatibility with blocking scorers.
+    allowed_regions : tuple or None
+        Tuple of region name strings that this scorer is valid for.
+        ``None`` means the scorer can be used with any region.
     """
 
     name: str = "BaseScorer"
     description: str = "Abstract base scorer"
     requires_blocking_detection: bool = True
+    requires_anomaly: bool = True
+    required_variable: str = "z500"
+    allowed_regions: tuple = None
 
     @abstractmethod
     def compute_event_scores(
@@ -117,6 +131,33 @@ class BlockingScorer(ABC):
             Name of the primary score column.
         """
         return "score"
+
+    def score_from_anomaly(
+        self,
+        z500_anom: "xr.DataArray",
+        event_info: dict,
+        region_bounds: dict,
+        onset_time_idx: int,
+        threshold_90: Optional[dict] = None,
+        scorer_params: Optional[dict] = None,
+    ) -> float:
+        """Compute scalar score from a pre-computed anomaly field.
+
+        scorer_params carries config-defined values that are NOT stored as
+        scorer object attributes (e.g. n_days/duration_days for gridpoint
+        scorers, fallback_to_nonblocked for GridpointIntensityScorer).
+        These must be passed through explicitly because the scorer constructors
+        store only their own init-time parameters (e.g. min_persistence).
+
+        Default: raises NotImplementedError.  Anomaly-path scorers must
+        override this.  Non-anomaly scorers (HeatwaveMeanScorer) do not
+        override it — score_single_member routes them to
+        compute_score_from_field() instead.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement score_from_anomaly(). "
+            "Use compute_score_from_field() for non-anomaly scorers."
+        )
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name='{self.name}')"

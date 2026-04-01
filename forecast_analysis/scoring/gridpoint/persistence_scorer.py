@@ -322,6 +322,7 @@ class GridpointPersistenceScorer(BlockingScorer):
     name = "GridpointPersistenceScorer"
     description = "DG-style per-gridpoint blocking with persistence criterion"
     requires_blocking_detection = False
+    allowed_regions = ("NorthAtlantic",)
 
     def __init__(
         self,
@@ -607,6 +608,24 @@ class GridpointPersistenceScorer(BlockingScorer):
         raise NotImplementedError(
             "GridpointPersistenceScorer does not use the event_info interface. "
             "Use compute_score() instead."
+        )
+
+    def score_from_anomaly(self, z500_anom, event_info, region_bounds,
+                           onset_time_idx, threshold_90=None, scorer_params=None):
+        """Delegate to compute_score_from_anomalies."""
+        if threshold_90 is None:
+            raise ValueError("GridpointPersistenceScorer.score_from_anomaly requires threshold_90")
+        params = scorer_params or {}
+        duration_days = int(params.get("n_days") or params.get("duration_days") or 5)
+        return self.compute_score_from_anomalies(
+            z500_anom=z500_anom,
+            threshold_90=threshold_90,
+            onset_time_idx=onset_time_idx,
+            duration_days=duration_days,
+            region_lon_min=region_bounds["lon_min"],
+            region_lon_max=region_bounds["lon_max"],
+            region_lat_min=region_bounds["lat_min"],
+            region_lat_max=region_bounds["lat_max"],
         )
 
     def get_score_columns(self):

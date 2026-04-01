@@ -36,23 +36,50 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
     name = "GridpointIntensityScorer"
     description = "Strict per-window threshold exceedance with moving-average max intensity"
     requires_blocking_detection = False
+    allowed_regions = ("NorthAtlantic",)
+
+    _VALID_FALLBACK_VALUES = {False, True, "always"}
+
+    @staticmethod
+    def _normalize_fallback(value):
+        """Normalize fallback_to_nonblocked, accepting case-insensitive strings."""
+        if isinstance(value, str):
+            value = value.strip().lower()
+        if value not in GridpointIntensityScorer._VALID_FALLBACK_VALUES:
+            raise ValueError(
+                f"Invalid fallback_to_nonblocked={value!r}. "
+                f"Must be one of: False, True, 'always'."
+            )
+        return value
 
     @staticmethod
     def _compute_window_max_intensity(
         z500_anom_np: np.ndarray,
-        above_threshold_np: np.ndarray,
+        above_threshold_np: Optional[np.ndarray],
         region_mask_np: np.ndarray,
         start_idx: int,
         end_idx: int,
         window_days: int,
-        fallback_to_nonblocked: bool,
+        fallback_to_nonblocked: Union[bool, str] = False,
     ) -> float:
         """
         Compute max intensity over [start_idx, end_idx) using strict window logic.
 
         A grid point is valid at start t only if it is above threshold on all
         days in [t, t + window_days).
+
+        Parameters
+        ----------
+        fallback_to_nonblocked : bool or str
+            False: only blocked grid points contribute; 0 if none.
+            True: fall back to regional max if no blocked points.
+            "always": always use regional max, skip blocking check entirely.
+            String values are case-insensitive ("Always", "ALWAYS" accepted).
         """
+        fallback_to_nonblocked = GridpointIntensityScorer._normalize_fallback(
+            fallback_to_nonblocked
+        )
+
         actual_duration = end_idx - start_idx
         if actual_duration < window_days:
             raise ValueError(
@@ -60,6 +87,7 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
                 f"window_days ({window_days})"
             )
 
+        always_mode = fallback_to_nonblocked == "always"
         max_start_idx = end_idx - window_days
         max_intensity = 0.0
 
@@ -67,17 +95,24 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
             t_end = t + window_days
 
             window_mean = np.mean(z500_anom_np[t:t_end, :, :], axis=0)
-            blocked_at_t = np.all(above_threshold_np[t:t_end], axis=0) & region_mask_np
 
-            if np.any(blocked_at_t):
-                max_at_t = float(np.max(window_mean[blocked_at_t]))
-            elif fallback_to_nonblocked:
+            if always_mode:
                 if np.any(region_mask_np):
                     max_at_t = float(np.max(window_mean[region_mask_np]))
                 else:
                     max_at_t = 0.0
             else:
-                max_at_t = 0.0
+                blocked_at_t = np.all(above_threshold_np[t:t_end], axis=0) & region_mask_np
+
+                if np.any(blocked_at_t):
+                    max_at_t = float(np.max(window_mean[blocked_at_t]))
+                elif fallback_to_nonblocked:
+                    if np.any(region_mask_np):
+                        max_at_t = float(np.max(window_mean[region_mask_np]))
+                    else:
+                        max_at_t = 0.0
+                else:
+                    max_at_t = 0.0
 
             if max_at_t > max_intensity:
                 max_intensity = max_at_t
@@ -95,7 +130,7 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
         region_lon_max: Optional[float] = None,
         region_lat_min: Optional[float] = None,
         region_lat_max: Optional[float] = None,
-        fallback_to_nonblocked: bool = False,
+        fallback_to_nonblocked: Union[bool, str] = False,
     ) -> float:
         """
         Compute maximum intensity score from pre-computed anomalies.
@@ -126,12 +161,19 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
                 f"duration_days={duration_days}, data length={len(z500_anom.time)}"
             )
 
-        above_threshold = apply_monthly_threshold(z500_anom, threshold_90)
+        fallback_to_nonblocked = self._normalize_fallback(fallback_to_nonblocked)
+
+        if fallback_to_nonblocked == "always":
+            above_threshold_np = None
+        else:
+            above_threshold = apply_monthly_threshold(z500_anom, threshold_90)
+            above_threshold_np = above_threshold.values
+
         region_mask = create_region_mask(z500_anom, lon_min, lon_max, lat_min, lat_max)
 
         return self._compute_window_max_intensity(
             z500_anom_np=z500_anom.values,
-            above_threshold_np=above_threshold.values,
+            above_threshold_np=above_threshold_np,
             region_mask_np=region_mask.values,
             start_idx=onset_time_idx,
             end_idx=window_end_idx,
@@ -149,7 +191,7 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
         region_lon_max: Optional[float] = None,
         region_lat_min: Optional[float] = None,
         region_lat_max: Optional[float] = None,
-        fallback_to_nonblocked: bool = False,
+        fallback_to_nonblocked: Union[bool, str] = False,
     ) -> float:
         """
         Compute maximum intensity score for a time window from raw Z500.
@@ -174,7 +216,14 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
         end_time = start_time + np.timedelta64(duration_days - 1, "D")
 
         z500_anom = compute_anomalies_from_climatology(z500, self.climatology)
-        above_threshold = apply_monthly_threshold(z500_anom, self.thresholds)
+
+        fallback_to_nonblocked = self._normalize_fallback(fallback_to_nonblocked)
+
+        if fallback_to_nonblocked == "always":
+            above_threshold_np = None
+        else:
+            above_threshold = apply_monthly_threshold(z500_anom, self.thresholds)
+            above_threshold_np = above_threshold.values
 
         time_vals = z500_anom.time.values
         start_idx = np.searchsorted(time_vals, start_time)
@@ -189,12 +238,32 @@ class GridpointIntensityScorer(GridpointPersistenceScorer):
 
         return self._compute_window_max_intensity(
             z500_anom_np=z500_anom.values,
-            above_threshold_np=above_threshold.values,
+            above_threshold_np=above_threshold_np,
             region_mask_np=region_mask.values,
             start_idx=start_idx,
             end_idx=end_idx,
             window_days=window_days,
             fallback_to_nonblocked=fallback_to_nonblocked,
+        )
+
+    def score_from_anomaly(self, z500_anom, event_info, region_bounds,
+                           onset_time_idx, threshold_90=None, scorer_params=None):
+        """Delegate to compute_intensity_score_from_anomalies."""
+        if threshold_90 is None:
+            raise ValueError("GridpointIntensityScorer.score_from_anomaly requires threshold_90")
+        params = scorer_params or {}
+        duration_days = int(params.get("n_days") or params.get("duration_days") or 5)
+        fallback = params.get("fallback_to_nonblocked", False)
+        return self.compute_intensity_score_from_anomalies(
+            z500_anom=z500_anom,
+            threshold_90=threshold_90,
+            onset_time_idx=onset_time_idx,
+            duration_days=duration_days,
+            region_lon_min=region_bounds["lon_min"],
+            region_lon_max=region_bounds["lon_max"],
+            region_lat_min=region_bounds["lat_min"],
+            region_lat_max=region_bounds["lat_max"],
+            fallback_to_nonblocked=fallback,
         )
 
     def get_score_columns(self):
@@ -214,7 +283,7 @@ def compute_gridpoint_intensity_score(
     climatology_path: Union[str, Path] = DEFAULT_CLIMATOLOGY_PATH,
     thresholds_path: Union[str, Path] = DEFAULT_THRESHOLDS_PATH,
     min_persistence: int = 5,
-    fallback_to_nonblocked: bool = False,
+    fallback_to_nonblocked: Union[bool, str] = False,
     region_lon_min: Optional[float] = None,
     region_lon_max: Optional[float] = None,
     region_lat_min: Optional[float] = None,
